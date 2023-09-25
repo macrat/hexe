@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--network=host",
+    "--rm",
+    "-v",
+    "{connection_file}:/connection_file",
+    "python_kernel"
+  ],
+  "display_name": "Python",
+  "language": "python"
+}

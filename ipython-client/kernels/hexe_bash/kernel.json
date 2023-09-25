@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--network=host",
+    "--rm",
+    "-v",
+    "{connection_file}:/connection_file",
+    "bash_kernel"
+  ],
+  "display_name": "Bash",
+  "language": "bash"
+}
