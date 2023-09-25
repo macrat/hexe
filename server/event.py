@@ -104,11 +104,15 @@ class FunctionOutput(Event):
 
 @dataclass
 class Error(Event):
-    source: uuid.UUID | None
     content: str
+    source: uuid.UUID | None
     type: Literal["error"] = "error"
 
-    def __init__(self, *args, source: uuid.UUID | None = None, **kwargs) -> None:
+    def __init__(
+        self, *args, content: str = "", source: uuid.UUID | None = None, **kwargs
+    ) -> None:
+        self.content = content
+        self.source = source
         super().__init__(
             *args,
             **{

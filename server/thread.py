@@ -130,23 +130,27 @@ class Thread:
             n_tokens = 0
             for i, note in enumerate(notes):
                 n_tokens += note.n_tokens
-                if n_tokens > 1028:
+                if n_tokens > 1024:
                     notes = notes[:i]
                     break
 
         system_prompt = "\n".join(
             [
-                "You are Hexe, an AI assistant that can complete any task by executing code or other ways.",
+                "You are Hexe, a faithful AI assistant, and also a world-class programmer who can complete anything by executing code.",
+                "",
+                "If user changes the topic, write a note what you two talked about in the previous topic, and then respond to the new topic.",
+                "Or if you learned new things, write it to notes to remember it.",
+                "Too many notes are better than too few notes.",
                 "",
                 "If user asks you to do something, you write a plan first, and then execute it.",
                 "Always recap progress and your plan between each step.",
                 "You have only very short term memory, so you need to recap the plan to retain it.",
-                "If you learned new things, write it to notes to remember it.",
                 "",
                 "Keep each steps in the plan as short as possible, because simple steps are easier to achieve.",
-                "Write a shorter code, and test it more often.",
+                "Do write a shorter code, and test it more often.",
                 "",
-                "If user changes the topic, write a note what you two talked about in the previous topic, and then respond to the new topic.",
+                "",
+                f"Current datetime: {datetime.now(self.timezone).isoformat()}",
                 "",
                 "==========",
                 "Notes:",
@@ -172,7 +176,7 @@ class Thread:
                 },
                 *(
                     msg.as_dict()
-                    for msg in reversed([*self.history.load(self.user_id)])
+                    for msg in reversed([*self.history.load(self.user_id, 2 * 1024)])
                 ),
             ],
             functions=[
@@ -190,11 +194,11 @@ class Thread:
                                     "required": ["content", "available_term"],
                                     "properties": {
                                         "content": {
-                                            "desctiption": "The content to save. Include all context required for remembering the information.",
+                                            "desctiption": "The content to save. Follow 5W1H method to write each note.",
                                             "type": "string",
                                         },
                                         "available_term": {
-                                            "description": "How long the information is available.",
+                                            "description": "How long the information is meaningful and useful.",
                                             "type": "string",
                                             "enum": list(TERMS.keys()),
                                         },
@@ -207,7 +211,7 @@ class Thread:
                 },
                 {
                     "name": "search_notes",
-                    "description": "Search notes that you saved and returns IDs, created timestamps, and note contents.",
+                    "description": "Search notes that you saved. The result include IDs, created timestamps, and note contents.",
                     "parameters": {
                         "type": "object",
                         "required": ["query"],
@@ -237,7 +241,7 @@ class Thread:
                 },
                 {
                     "name": "run_code",
-                    "description": "Run code and returns the result. You can use major packages and commands.",
+                    "description": "Run code in a Jupyter environment, and returns the output and the result. To install packages, you can use `!pip install <package>` for Python, and `apt-get install <package>` for Bash.",
                     "parameters": {
                         "type": "object",
                         "required": ["language", "code"],
@@ -376,7 +380,7 @@ class Thread:
                 self.user_id,
                 Message(
                     role="system",
-                    content=f"Failed to parse arguments to call function `{name}`.\n> {err}\n\nGiven arguments:\n```\n{arguments}\n```\n\nPlease fix the syntax and call `{name}` again.",
+                    content=f"Failed to parse arguments to call function `{name}`.\n> {err}\n\nGiven arguments:\n```json\n{arguments}\n```\n\nPlease fix the syntax and call `{name}` again.",
                 ),
             )
             return

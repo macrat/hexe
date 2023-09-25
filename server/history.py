@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -37,10 +38,10 @@ class FunctionCall:
 class Message:
     id: uuid.UUID
     role: str
-    content: str | None
+    _content: str | None
     name: str | None
-    function_call: FunctionCall | None
-    n_tokens: int
+    _function_call: FunctionCall | None
+    _n_tokens: int
     created_at: datetime
 
     def __init__(
@@ -67,23 +68,70 @@ class Message:
             self.id = id
 
         self.role = role
-        self.content = content
+        self._content = content
         self.name = name
-        self.function_call = function_call
+        self._function_call = function_call
 
         if n_tokens is not None:
-            self.n_tokens = n_tokens
+            self._n_tokens = n_tokens
         else:
-            self.n_tokens = 0
-            if content is not None:
-                self.n_tokens += Tokenizer().count(content)
-            if function_call is not None:
-                self.n_tokens += Tokenizer().count(json.dumps(function_call.as_dict()))
+            self.__update_n_tokens()
 
         if created_at is None:
             self.created_at = datetime.now(timezone.utc)
         else:
             self.created_at = created_at
+
+    def __update_n_tokens(self) -> None:
+        self._n_tokens = 0
+        if self._content is not None:
+            self._n_tokens += Tokenizer().count(self._content)
+        if self._function_call is not None:
+            self._n_tokens += Tokenizer().count(self._function_call.as_json())
+
+    @property
+    def content(self) -> str | None:
+        return self._content
+
+    @content.setter
+    def content(self, value: str | None) -> None:
+        self._content = value
+        self.__update_n_tokens()
+
+    @property
+    def function_call(self) -> FunctionCall | None:
+        return self._function_call
+
+    @function_call.setter
+    def function_call(self, value: FunctionCall | None) -> None:
+        self._function_call = value
+        self.__update_n_tokens()
+
+    @property
+    def n_tokens(self) -> int:
+        return self._n_tokens
+
+    def trim(self) -> "Message":
+        """Remove unnecessary information for AI from the function output.
+        If the message is not from function, or the message is short enough,
+        the message is returned as-is.
+        """
+
+        if self.role != "function" or self.n_tokens <= 512:
+            return self
+
+        m = re.match(
+            r'^<(?<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+" (controls="controls" )?alt="(?P<alt>[^"]+)" />$',
+            self.content,
+        )
+        if m is not None:
+            return Message(
+                role="function",
+                content=f'<{m.group("tag")} alt="{m.group("alt")}" src="/*The media has shown, but the URL in the chat history has omitted.*/" />',
+                name=self.name,
+                function_call=self.function_call,
+                created_at=self.created_at,
+            )
 
     def as_dict(self) -> dict[str, str | None | dict[str, str]]:
         """Convert the message to a dictionary that can used in OpenAI library."""
@@ -199,7 +247,7 @@ class HistoryDB:
                 created_at=datetime.fromtimestamp(created_at, timezone.utc),
             )
 
-    def load(self, user_id: str, tokens_limit: int = 5 * 1024) -> Iterator[Message]:
+    def load(self, user_id: str, tokens_limit: int) -> Iterator[Message]:
         """Load chat history of the user, limit by total number of tokens."""
 
         n_tokens = 0

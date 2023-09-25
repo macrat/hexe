@@ -4,7 +4,7 @@ check:
 	pipenv run mypy *.py
 
 start:
-	pipenv run python main.py
+	pipenv run uvicorn main:app --reload
 
 fmt:
 	pipenv run black *.py

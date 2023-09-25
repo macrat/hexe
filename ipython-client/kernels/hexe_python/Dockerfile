@@ -8,13 +8,21 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && /usr/bin/python3 -m pip install --upgrade \
         pip \
+        ipython \
+        ipykernel \
+        beautifulsoup4 \
+        lxml \
+        matplotlib \
         numpy \
         pandas \
-        matplotlib \
-        seaborn \
+        pyppeteer \
+        pyquery \
+        pyyaml \
+        requests \
+        requests-html \
         scikit-learn \
-        ipython \
-        ipykernel
+        scipy \
+        seaborn
 
 VOLUME /connection_file
 
