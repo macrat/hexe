@@ -4,18 +4,45 @@ import json
 from datetime import datetime
 
 from jupyter_client import AsyncKernelManager, AsyncKernelClient
+from jupyter_client.kernelspec import KernelSpec, KernelSpecManager
 
 import event
+
+
+class HexeKernelSpecManager(KernelSpecManager):
+    def __init__(self, user_id: str) -> None:
+        self.__user_id = user_id
+
+    def get_kernel_spec(self, kernel_name: str) -> KernelSpec:
+        kernel_name = kernel_name.replace("hexe-", "")
+
+        return KernelSpec(
+            display_name=kernel_name,
+            language=kernel_name,
+            argv=[
+                "docker",
+                "run",
+                "--network=host",
+                "--rm",
+                "-v",
+                "{connection_file}:/connection_file",
+                f"hexe-{kernel_name}-kernel",
+            ],
+        )
 
 
 class CodeRunner:
     km: AsyncKernelManager
     kc: AsyncKernelClient | None = None
 
-    def __init__(self, kernel_name: str) -> None:
-        self.kernel_name = kernel_name
+    def __init__(self, user_id: str, language: str) -> None:
+        self.user_id = user_id
+        self.language = language
 
-        self.km = AsyncKernelManager(kernel_name=self.kernel_name)
+        self.km = AsyncKernelManager(
+            kernel_name=f"hexe-{language}",
+            kernel_spec_manager=HexeKernelSpecManager(user_id),
+        )
 
     async def start(self) -> None:
         if self.kc is None:

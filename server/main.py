@@ -1,5 +1,6 @@
 import json
 import uuid
+import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -18,7 +19,10 @@ thread_manager: ThreadManager | None = None
 def startup():
     global thread_manager
     ns = uuid.uuid5(uuid.NAMESPACE_DNS, "notes")
-    thread_manager = ThreadManager(HistoryDB("./history.db"), NoteDB("./notes", ns))
+    os.makedirs("./db", exist_ok=True)
+    thread_manager = ThreadManager(
+        HistoryDB("./db/history.db"), NoteDB("./db/notes", ns)
+    )
 
 
 @app.on_event("shutdown")
@@ -53,8 +57,24 @@ async def get():
                         }
                         const message = document.createElement('li');
                         message.classList.add(data.type);
-                        const content = document.createTextNode(data.content);
-                        message.appendChild(content);
+
+                        const type = document.createElement('b');
+                        type.appendChild(document.createTextNode(data.type));
+                        message.appendChild(type);
+
+                        message.appendChild(document.createTextNode(': '));
+
+                        if (data.type === 'function_call') {
+                            const content = document.createTextNode(`${data.name}(${data.arguments})`);
+                            message.appendChild(content);
+                        } else if (data.type === 'status') {
+                            const content = document.createTextNode(`[generating=${data.generating}]`);
+                            message.appendChild(content);
+                        } else {
+                            const content = document.createTextNode(data.content);
+                            message.appendChild(content);
+                        }
+
                         messages.appendChild(message);
                     };
 

@@ -111,9 +111,37 @@ class Thread:
             )
         )
 
-        await self.invoke()
+        await self.__event(
+            event.Status(
+                source=msg.id,
+                generating=True,
+                created_at=msg.created_at,
+            )
+        )
+        try:
+            await self.__invoke()
+        except Exception as err:
+            emsg = Message(
+                role="system",
+                content=f"Failed to invoke AI.\n> {err}",
+            )
+            await self.__event(
+                event.Error(
+                    id=emsg.id,
+                    content=emsg.content,
+                    created_at=emsg.created_at,
+                    source=msg.id,
+                )
+            )
+        finally:
+            await self.__event(
+                event.Status(
+                    source=msg.id,
+                    generating=False,
+                )
+            )
 
-    async def invoke(self) -> None:
+    async def __invoke(self) -> None:
         """Invoke AI using messages so far."""
 
         msg = Message(
@@ -347,7 +375,7 @@ class Thread:
                         msg.function_call.name,
                         msg.function_call.arguments,
                     )
-                    await self.invoke()
+                    await self.__invoke()
                 elif chunk.choices[0].finish_reason == "stop":
                     if msg.content is not None:
                         await self.__event(
@@ -596,7 +624,7 @@ class Thread:
         code = arguments["code"].strip()
 
         if language not in self.runners:
-            self.runners[language] = CodeRunner("hexe_" + language)
+            self.runners[language] = CodeRunner(self.user_id, language)
             await self.runners[language].start()
 
         runner = self.runners[language]

@@ -43,7 +43,7 @@ async def debug_main() -> None:
 async def debug_jupyter() -> None:
     from coderunner import CodeRunner
 
-    r = CodeRunner("hexe_python")
+    r = CodeRunner("user1", "_python")
     await r.start()
 
     async for ev in r.execute(uuid.uuid4(), "import matplotlib.pyplot as plt"):

@@ -6,7 +6,7 @@
     "--rm",
     "-v",
     "{connection_file}:/connection_file",
-    "python_kernel"
+    "hexe-python-kernel"
   ],
   "display_name": "Python",
   "language": "python"

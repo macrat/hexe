@@ -1,4 +1,4 @@
 .mypy_cache
 .venv
-notes
-history.db
+db/*
+!db/.gitkeep

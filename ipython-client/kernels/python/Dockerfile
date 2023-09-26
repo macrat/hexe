@@ -25,5 +25,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
         seaborn
 
 VOLUME /connection_file
+VOLUME /mnt/data
 
 CMD ["/usr/bin/python3", "-m", "ipykernel_launcher", "-f", "connection_file"]

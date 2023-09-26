@@ -15,5 +15,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
         bash_kernel
 
 VOLUME /connection_file
+VOLUME /mnt/data
 
 CMD ["/usr/bin/python3", "-m", "bash_kernel", "-f", "connection_file"]

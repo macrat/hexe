@@ -6,7 +6,7 @@
     "--rm",
     "-v",
     "{connection_file}:/connection_file",
-    "bash_kernel"
+    "hexe-bash-kernel"
   ],
   "display_name": "Bash",
   "language": "bash"

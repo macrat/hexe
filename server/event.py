@@ -6,7 +6,9 @@ from typing import Literal
 from abc import abstractmethod
 
 
-EventType = Literal["user", "assistant", "function_call", "function_output", "error"]
+EventType = Literal[
+    "user", "assistant", "function_call", "function_output", "status", "error"
+]
 
 EventDict = dict[str, str | float | bool]
 
@@ -99,6 +101,43 @@ class FunctionOutput(Event):
             "name": self.name,
             "content": self.content,
             "source": str(self.source),
+        }
+
+
+@dataclass
+class Status(Event):
+    source: uuid.UUID | None
+    generating: bool
+    type: Literal["status"] = "status"
+
+    def __init__(
+        self,
+        *args,
+        id: uuid.UUID | None = None,
+        source: uuid.UUID | None = None,
+        generating: bool = False,
+        **kwargs
+    ) -> None:
+        self.source = source
+        self.generating = generating
+
+        if id is None:
+            id = uuid.uuid4()
+
+        super().__init__(
+            *args,
+            **{
+                **kwargs,
+                "id": id,
+                "complete": True,
+            }
+        )
+
+    def as_dict(self) -> EventDict:
+        return {
+            **super().as_dict(),
+            "source": str(self.source),
+            "generating": self.generating,
         }
 
 

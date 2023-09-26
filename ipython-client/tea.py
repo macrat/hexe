@@ -7,7 +7,7 @@ from jupyter_client import AsyncKernelManager
 
 
 async def main():
-    km = AsyncKernelManager(kernel_name='hexe_python')
+    km = AsyncKernelManager(kernel_name='hexe-python-kernel')
     await km.start_kernel()
 
     kc = km.client()

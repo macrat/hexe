@@ -117,7 +117,7 @@ class Message:
         the message is returned as-is.
         """
 
-        if self.role != "function" or self.n_tokens <= 512:
+        if self.role != "function" or self.n_tokens <= 512 or self.content is None:
             return self
 
         m = re.match(
@@ -132,6 +132,8 @@ class Message:
                 function_call=self.function_call,
                 created_at=self.created_at,
             )
+
+        return self
 
     def as_dict(self) -> dict[str, str | None | dict[str, str]]:
         """Convert the message to a dictionary that can used in OpenAI library."""
