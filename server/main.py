@@ -1,6 +1,8 @@
 import json
 import uuid
 import os
+from datetime import datetime
+from datetime import timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -12,16 +14,21 @@ from thread import ThreadManager
 
 
 app = FastAPI()
+history: HistoryDB | None = None
 thread_manager: ThreadManager | None = None
 
 
 @app.on_event("startup")
 def startup():
+    global history
     global thread_manager
-    ns = uuid.uuid5(uuid.NAMESPACE_DNS, "notes")
+
     os.makedirs("./db", exist_ok=True)
+
+    history = HistoryDB("./db/history.db")
     thread_manager = ThreadManager(
-        HistoryDB("./db/history.db"), NoteDB("./db/notes", ns)
+        history,
+        NoteDB("./db/notes", uuid.uuid5(uuid.NAMESPACE_DNS, "notes")),
     )
 
 
@@ -47,7 +54,7 @@ async def get():
                 <script>
                     const messages = document.getElementById('messages');
 
-                    const ws = new WebSocket("ws://localhost:8000/ws");
+                    const ws = new WebSocket("ws://localhost:8000/api/events");
                     ws.onmessage = function(event) {
                         const data = JSON.parse(event.data);
 
@@ -94,7 +101,7 @@ async def get():
     )
 
 
-@app.websocket("/ws")
+@app.websocket("/api/events")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 

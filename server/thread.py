@@ -9,7 +9,7 @@ import asyncio
 import openai
 
 from note import Note, NoteDB
-from history import HistoryDB, Message, FunctionCall
+from history import HistoryDB
 import event
 from coderunner import CodeRunner
 
@@ -79,8 +79,11 @@ class Thread:
         for runner in self.runners.values():
             await runner.shutdown()
 
-    async def __event(self, event: event.Event) -> None:
-        await asyncio.gather(*[handler(event) for handler in self.event_handlers])
+    async def __event(self, ev: event.Event) -> None:
+        if ev.complete:
+            self.history.put(self.user_id, ev)
+
+        await asyncio.gather(*[handler(ev) for handler in self.event_handlers])
 
     def subscribe(self, handler: EventHandler) -> Callable[[], None]:
         self.event_handlers.append(handler)
@@ -96,65 +99,43 @@ class Thread:
         :param message: User message to send.
         """
 
-        msg = Message(
-            role="user",
-            content=message,
-        )
+        user_ev = event.User(content=message)
 
-        self.history.put(self.user_id, msg)
-        await self.__event(
-            event.User(
-                id=msg.id,
-                content=message,
-                complete=True,
-                created_at=msg.created_at,
-            )
-        )
+        await self.__event(user_ev)
 
         await self.__event(
             event.Status(
-                source=msg.id,
+                source=user_ev.id,
                 generating=True,
-                created_at=msg.created_at,
+                created_at=user_ev.created_at,
             )
         )
+
         try:
-            await self.__invoke()
+            await self.__invoke(user_ev.id)
         except Exception as err:
-            emsg = Message(
-                role="system",
+            err_ev = event.Error(
                 content=f"Failed to invoke AI.\n> {err}",
+                source=user_ev.id,
             )
-            await self.__event(
-                event.Error(
-                    id=emsg.id,
-                    content=emsg.content,
-                    created_at=emsg.created_at,
-                    source=msg.id,
-                )
-            )
+            await self.__event(err_ev)
         finally:
             await self.__event(
                 event.Status(
-                    source=msg.id,
+                    source=user_ev.id,
                     generating=False,
                 )
             )
 
-    async def __invoke(self) -> None:
+    async def __invoke(self, source: uuid.UUID) -> None:
         """Invoke AI using messages so far."""
 
-        msg = Message(
-            role="assistant",
-        )
+        assi_ev = event.Assistant(content="", source=source, complete=True)
 
         last_user_msg = self.history.last_user_message(self.user_id)
         notes = []
-        if last_user_msg is not None and last_user_msg.content is not None:
-            notes = self.notes.query(
-                self.user_id,
-                last_user_msg.content,
-            )
+        if last_user_msg is not None:
+            notes = self.notes.query(self.user_id, last_user_msg)
             n_tokens = 0
             for i, note in enumerate(notes):
                 n_tokens += note.n_tokens
@@ -202,9 +183,8 @@ class Thread:
                     "role": "system",
                     "content": system_prompt,
                 },
-                *(
-                    msg.as_dict()
-                    for msg in reversed([*self.history.load(self.user_id, 2 * 1024)])
+                *event.as_messages(
+                    [x.event for x in self.history.load(self.user_id, 2 * 1024)]
                 ),
             ],
             functions=[
@@ -292,195 +272,122 @@ class Thread:
             stream=True,
         )
 
+        func_ev: event.FunctionCall | None = None
+
         async for chunk in completion:
             delta = chunk.choices[0].delta
 
             if "content" in delta:
-                if msg.content is None:
-                    msg.content = delta.content
-                else:
-                    msg.content += delta.content
+                assi_ev.content += delta.content
 
                 await self.__event(
                     event.Assistant(
-                        id=msg.id,
+                        id=assi_ev.id,
                         content=delta.content,
-                        created_at=msg.created_at,
+                        created_at=assi_ev.created_at,
+                        source=source,
                         complete=False,
                     )
                 )
 
             if "function_call" in delta:
-                if msg.function_call is None:
-                    msg.function_call = FunctionCall(
+                if func_ev is None:
+                    func_ev = event.FunctionCall(
+                        id=assi_ev.id,
                         name=delta.function_call.name,
                         arguments=delta.function_call.arguments,
+                        source=source if assi_ev.content == "" else assi_ev.id,
+                        complete=True,
                     )
                 else:
-                    msg.function_call.arguments += delta.function_call.arguments
+                    func_ev.arguments += delta.function_call.arguments
 
                 await self.__event(
                     event.FunctionCall(
-                        id=msg.id,
-                        name=msg.function_call.name,
+                        id=func_ev.id,
+                        name=func_ev.name,
                         arguments=delta.function_call.arguments,
-                        created_at=msg.created_at,
+                        created_at=func_ev.created_at,
+                        source=source,
                         complete=False,
                     )
                 )
 
             if chunk.choices[0].get("finish_reason") is not None:
-                self.history.put(self.user_id, msg)
+                if assi_ev.content != "":
+                    await self.__event(assi_ev)
+
+                if func_ev is not None:
+                    await self.__event(func_ev)
 
                 if chunk.choices[0].finish_reason == "length":
                     await self.__event(
                         event.Error(
-                            id=msg.id,
                             content="Max tokens exceeded",
-                        )
-                    )
-                elif chunk.choices[0].finish_reason == "function_call":
-                    if msg.function_call is None:
-                        await self.__event(
-                            event.Error(
-                                type="error",
-                                id=msg.id,
-                                content="Function call is not specified",
-                            )
-                        )
-                        return
-
-                    if msg.content is not None:
-                        await self.__event(
-                            event.Assistant(
-                                id=msg.id,
-                                content=msg.content,
-                                complete=True,
-                                created_at=msg.created_at,
-                            )
-                        )
-
-                    await self.__event(
-                        event.FunctionCall(
-                            id=msg.id,
-                            name=msg.function_call.name,
-                            arguments=msg.function_call.arguments,
-                            complete=True,
-                            created_at=msg.created_at,
+                            source=assi_ev.id if func_ev is None else func_ev.id,
                         )
                     )
 
-                    await self.call_function(
-                        msg.id,
-                        msg.function_call.name,
-                        msg.function_call.arguments,
-                    )
-                    await self.__invoke()
-                elif chunk.choices[0].finish_reason == "stop":
-                    if msg.content is not None:
-                        await self.__event(
-                            event.Assistant(
-                                id=msg.id,
-                                content=msg.content,
-                                complete=True,
-                                created_at=msg.created_at,
-                            )
-                        )
+                match chunk.choices[0].finish_reason, func_ev:
+                    case "function_call", event.FunctionCall | "stop", event.FunctionCall:
+                        result = await self.call_function(func_ev)
+                        await self.__event(result)
+                        await self.__invoke(result.id)
 
-                    if msg.function_call is not None:
-                        await self.__event(
-                            event.FunctionCall(
-                                id=msg.id,
-                                name=msg.function_call.name,
-                                arguments=msg.function_call.arguments,
-                                complete=True,
-                                created_at=msg.created_at,
-                            )
-                        )
-
-    async def call_function(self, source: uuid.UUID, name: str, arguments: str) -> None:
+    async def call_function(self, source: event.FunctionCall) -> event.Event:
         """Call a function and put the result to the history."""
 
         try:
-            args = json.loads(arguments)
+            args = json.loads(source.arguments)
         except Exception as err:
-            self.history.put(
-                self.user_id,
-                Message(
-                    role="system",
-                    content=f"Failed to parse arguments to call function `{name}`.\n> {err}\n\nGiven arguments:\n```json\n{arguments}\n```\n\nPlease fix the syntax and call `{name}` again.",
-                ),
+            return event.Error(
+                content=f"Failed to parse arguments to call function `{source.name}`.\n> {err}\n\nGiven arguments:\n```json\n{source.arguments}\n```\n\nPlease fix the syntax and call `{source.name}` again.",
+                source=source.id,
             )
-            return
 
-        msg: Message | None = Message(
-            role="function",
-            name=name,
-            content="",
-        )
-
-        if name == "save_notes":
-            msg = await self.call_save_notes(source, args)
-        elif name == "search_notes":
-            msg = await self.call_search_notes(source, args)
-        elif name == "delete_notes":
-            msg = await self.call_delete_notes(source, args)
-        elif name == "run_code":
-            msg = await self.call_run_code(source, args)
-        # elif name == "generate_image":
-        else:
-            self.history.put(
-                self.user_id,
-                Message(
-                    role="system",
-                    content=f"Unknown function: `{name}`\nPlease use only given functions.",
-                ),
-            )
-            return
-
-        if msg is not None:
-            self.history.put(self.user_id, msg)
-            await self.__event(
-                event.FunctionOutput(
-                    id=msg.id,
-                    name=name,
-                    content="```json\n"
-                    + (msg.content if msg.content is not None else "{}")
-                    + "\n```",
-                    source=source,
-                    created_at=msg.created_at,
-                    complete=True,
+        match source.name:
+            case "save_notes":
+                return await self.call_save_notes(source, args)
+            case "search_notes":
+                return await self.call_search_notes(source, args)
+            case "delete_notes":
+                return await self.call_delete_notes(source, args)
+            case "run_code":
+                return await self.call_run_code(source, args)
+            # case "generate_image":
+            case _:
+                return event.Error(
+                    content=f"Unknown function: `{source.name}`\nPlease use only given functions.",
+                    source=source.id,
                 )
+
+    async def call_save_notes(
+        self, source: event.FunctionCall, args: dict
+    ) -> event.Event:
+        if not isinstance(args.get("notes"), list) or any(
+            [not isinstance(note, dict) for note in args["notes"]]
+        ):
+            return event.Error(
+                content="save_notes: `notes` argument must be a non-empty list of objects.",
+                source=source.id,
             )
 
-    async def call_save_notes(self, _: uuid.UUID, arguments: dict) -> Message | None:
-        msg = Message(
-            role="function",
-            name="save_notes",
-        )
-
-        if not isinstance(arguments.get("notes"), list) or any(
-            [not isinstance(note, dict) for note in arguments["notes"]]
-        ):
-            msg.content = (
-                '{"error": "`notes` argument must be a non-empty list of objects."}'
+        if any([not isinstance(note.get("content"), str) for note in args["notes"]]):
+            return event.Error(
+                content="save_notes: `content` property of `notes` argument must be a non-empty string.",
+                source=source.id,
             )
-            return msg
-
-        if any(
-            [not isinstance(note.get("content"), str) for note in arguments["notes"]]
-        ):
-            msg.content = '{"error": "`content` property of `notes` argument must be a non-empty string."}'
-            return msg
 
         if any(
             [
                 note.get("available_term", "forever") not in TERMS
-                for note in arguments["notes"]
+                for note in args["notes"]
             ]
         ):
-            msg.content = '{"error": "`available_term` property of `notes` argument must be one of `a day`, `a month`, `a year`, or `forever`."}'
-            return msg
+            return event.Error(
+                content="save_notes: `available_term` property of `notes` argument must be one of `a day`, `a month`, `a year`, or `forever`.",
+                source=source.id,
+            )
 
         now = datetime.now(timezone.utc)
         notes = [
@@ -490,56 +397,79 @@ class Thread:
                 expires_at=now
                 + timedelta(days=TERMS[note.get("available_term", "forever")]),
             )
-            for note in arguments["notes"]
+            for note in args["notes"]
             if len(note["content"].strip()) > 0
         ]
 
         if len(notes) == 0:
-            msg.content = (
-                '{"error": "`notes` argument must be a non-empty list of objects."}'
+            return event.Error(
+                content="save_notes: `notes` argument must be a non-empty list of objects.",
+                source=source.id,
             )
-            return msg
 
         try:
             self.notes.save(self.user_id, notes)
         except Exception as err:
-            msg.content = json.dumps({"error": str(err)})
-            return msg
+            return event.Error(
+                content=f"save_notes: Failed to save notes.\n> {err}",
+                source=source.id,
+            )
         else:
-            msg.content = json.dumps({"result": "succeed", "saved_notes": len(notes)})
-            return msg
+            return event.FunctionOutput(
+                name="save_notes",
+                content=json.dumps({"result": "Succeed.", "saved_notes": len(notes)}),
+                source=source.id,
+                complete=True,
+            )
 
-    async def call_search_notes(self, _: uuid.UUID, arguments: dict) -> Message | None:
-        msg = Message(
-            role="function",
-            name="search_notes",
-        )
+    async def call_search_notes(
+        self, source: event.FunctionCall, args: dict
+    ) -> event.Event:
+        if "query" not in args:
+            return event.Error(
+                content="search_notes: `query` argument is required.",
+                source=source.id,
+            )
 
-        if "query" not in arguments:
-            msg.content = '{"error": "`query` argument is required."}'
-            return msg
+        if not isinstance(args["query"], str):
+            return event.Error(
+                content="search_notes: `query` argument must be a non-empty string.",
+                source=source.id,
+            )
 
-        if not isinstance(arguments["query"], str):
-            msg.content = '{"error": "`query` argument must be a non-empty string."}'
-            return msg
-
-        query = arguments["query"].strip()
+        query = args["query"].strip()
 
         if len(query) == 0:
-            msg.content = '{"error": "`query` argument must be a non-empty string."}'
-            return msg
+            return event.Error(
+                content="search_notes: `query` argument must be a non-empty string.",
+                source=source.id,
+            )
 
         try:
             all_result = self.notes.query(
                 self.user_id, query, n_results=100, threshold=0.2
             )
         except Exception as err:
-            msg.content = json.dumps({"error": str(err)})
-            return msg
+            return event.Error(
+                content=f"search_notes: Failed to search notes.\n> {err}",
+                source=source.id,
+            )
 
         if len(all_result) == 0:
-            msg.content = '{"error": "No such notes found.", "rule": "Before report it to user, try again with different query at least 3 times."}'
-            return msg
+            return event.FunctionOutput(
+                name="search_notes",
+                content="\n".join(
+                    [
+                        "{\n",
+                        '  "result": "Found 0 notes.",',
+                        '  "notes": [],',
+                        '  "rule": "Before report user that not found notes, try again with different query at least 3 times.",',
+                        "}",
+                    ]
+                ),
+                source=source.id,
+                complete=True,
+            )
 
         n_tokens = 0
         for i, note in enumerate(all_result):
@@ -548,102 +478,112 @@ class Thread:
                 limited_result = all_result[:i]
                 break
 
-        msg.content = (
-            f'{{\n  "result": "Found {len(all_result)} notes."\n  "notes": [\n'
-        )
-        msg.content += "\n".join(
+        records = [
+            json.dumps(
+                {
+                    "id": str(note.id),
+                    "created_at": note.created_at.astimezone(self.timezone).isoformat(),
+                    "content": note.content,
+                }
+            )
+            for note in limited_result
+        ]
+
+        content = "\n".join(
             [
-                "  "
-                + json.dumps(
-                    {
-                        "id": str(note.id),
-                        "created_at": note.created_at.astimezone(
-                            self.timezone
-                        ).isoformat(),
-                        "content": note.content,
-                    }
-                )
-                for note in limited_result
+                "{\n",
+                f'  "result": "Found {len(all_result)} notes.",',
+                '  "notes": [',
+                *[f"  {record}," for record in records],
+                "  ],",
+                '  "rule": "If there is no suitable notes found, please try different query before report to user.",',
+                "}",
             ]
         )
-        msg.content += "\n  ]\n}"
-        return msg
 
-    async def call_delete_notes(self, _: uuid.UUID, arguments: dict) -> Message | None:
-        msg = Message(
-            role="function",
-            name="delete_notes",
+        return event.FunctionOutput(
+            name="search_notes",
+            content=content,
+            source=source.id,
+            complete=True,
         )
 
-        if "ids" not in arguments:
-            msg.content = '{"error": "`ids` argument is required."}'
-            return msg
+    async def call_delete_notes(
+        self, source: event.FunctionCall, args: dict
+    ) -> event.Event:
+        if "ids" not in args:
+            return event.Error(
+                content="delete_notes: `ids` argument is required.",
+                source=source.id,
+            )
 
-        if not isinstance(arguments["ids"], list):
-            msg.content = '{"error": "`ids` argument must be a non-empty list."}'
-            return msg
+        if not isinstance(args["ids"], list):
+            return event.Error(
+                content="delete_notes: `ids` argument must be a non-empty list.",
+                source=source.id,
+            )
 
         try:
-            ids = [uuid.UUID(id) for id in arguments["ids"]]
+            ids = [uuid.UUID(id) for id in args["ids"]]
         except Exception as err:
-            msg.content = f'{{"error": "invalid `ids` argument: {err}"}}'
-            return msg
+            return event.Error(
+                content=f"delete_notes: invalid `ids` argument: {err}",
+                source=source.id,
+            )
 
         try:
             self.notes.delete(self.user_id, ids)
         except Exception as err:
-            msg.content = json.dumps({"error": str(err)})
-            return msg
+            return event.Error(
+                content=f"delete_notes: Failed to delete notes.\n> {err}",
+                source=source.id,
+            )
         else:
-            msg.content = json.dumps({"result": "succeed", "deleted_notes": len(ids)})
-            return msg
+            return event.FunctionOutput(
+                name="delete_notes",
+                content=json.dumps({"result": "Succeed.", "deleted_notes": len(ids)}),
+                source=source.id,
+                complete=True,
+            )
 
-    async def call_run_code(self, source: uuid.UUID, arguments: dict) -> Message | None:
-        msg = Message(
-            role="function",
-            name="run_code",
-        )
-
+    async def call_run_code(
+        self, source: event.FunctionCall, args: dict
+    ) -> event.Event:
         supported_languages = ["python", "bash"]
-        if (
-            "language" not in arguments
-            or arguments.get("language") not in supported_languages
-        ):
-            msg.content = f'{{"error": "`language` argument must be one of {supported_languages}."}}'
-            return msg
+        if "language" not in args or args.get("language") not in supported_languages:
+            return event.Error(
+                content=f"run_code: `language` argument must be one of: {supported_languages}.",
+                source=source.id,
+            )
 
         if (
-            "code" not in arguments
-            or not isinstance(arguments["code"], str)
-            or len(arguments["code"].strip()) == 0
+            "code" not in args
+            or not isinstance(args["code"], str)
+            or len(args["code"].strip()) == 0
         ):
-            msg.content = '{"error": "`code` argument must be a string."}'
-            return msg
+            return event.Error(
+                content="run_code: `code` argument must be a non-empty string.",
+                source=source.id,
+            )
 
-        language = arguments["language"]
-        code = arguments["code"].strip()
+        language = args["language"]
+        code = args["code"].strip()
 
         if language not in self.runners:
             self.runners[language] = CodeRunner(self.user_id, language)
-            await self.runners[language].start()
 
         runner = self.runners[language]
 
-        async for ev in runner.execute(source, code):
-            await self.__event(ev)
+        prev: event.Event | None = None
+        async for ev in runner.execute(source.id, code):
+            if prev is not None:
+                await self.__event(prev)
+            prev = ev
 
-            if ev.complete and (
-                isinstance(ev, event.Error) or isinstance(ev, event.FunctionOutput)
-            ):
-                self.history.put(
-                    self.user_id,
-                    Message(
-                        id=ev.id,
-                        role="function",
-                        name="run_code",
-                        content=ev.content,
-                        created_at=ev.created_at,
-                    ),
-                )
+        if prev is None:
+            return event.Error(
+                content="run_code: Failed to start Jupyter environment to execute code.",
+                source=source.id,
+            )
 
-        return None
+        return prev

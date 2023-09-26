@@ -1,5 +1,5 @@
 import uuid
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 import json
 from datetime import datetime
 
@@ -44,12 +44,16 @@ class CodeRunner:
             kernel_spec_manager=HexeKernelSpecManager(user_id),
         )
 
-    async def start(self) -> None:
-        if self.kc is None:
+    async def _start(self) -> AsyncKernelClient:
+        if self.kc is not None:
+            return self.kc
+        else:
             await self.km.start_kernel()
 
             self.kc = self.km.client()
             self.kc.start_channels()
+
+            return self.kc
 
     async def shutdown(self) -> None:
         if self.kc is not None:
@@ -61,7 +65,7 @@ class CodeRunner:
         self, source: uuid.UUID, code: str
     ) -> AsyncIterator[event.FunctionOutput | event.Error]:
         if self.kc is None:
-            raise RuntimeError("Kernel is not running")
+            self.kc = await self._start()
 
         stream_id = uuid.uuid4()
         stime = datetime.now()
@@ -185,7 +189,7 @@ class CodeRunner:
                     )
 
                 if msg["msg_type"] == "execute_result":
-                    yield event.FunctionOutput(
+                    result = event.FunctionOutput(
                         id=uuid.uuid4(),
                         name="run_code",
                         content=msg["content"]["data"]["text/plain"],
@@ -193,7 +197,6 @@ class CodeRunner:
                         complete=True,
                         created_at=datetime.now(),
                     )
-                    return
 
                 if (
                     msg["msg_type"] == "status"
@@ -207,4 +210,4 @@ class CodeRunner:
                         complete=True,
                         created_at=stime,
                     )
-                    return
+                    yield result

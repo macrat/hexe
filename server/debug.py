@@ -44,7 +44,6 @@ async def debug_jupyter() -> None:
     from coderunner import CodeRunner
 
     r = CodeRunner("user1", "_python")
-    await r.start()
 
     async for ev in r.execute(uuid.uuid4(), "import matplotlib.pyplot as plt"):
         await debug_event_handler(ev)

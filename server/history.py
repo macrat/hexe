@@ -4,9 +4,10 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Iterator, Literal
 
 from tokenizer import Tokenizer
+import event
 
 
 @dataclass
@@ -34,125 +35,10 @@ class FunctionCall:
         return json.dumps(self.as_dict())
 
 
-@dataclass
-class Message:
-    id: uuid.UUID
-    role: str
-    _content: str | None
-    name: str | None
-    _function_call: FunctionCall | None
-    _n_tokens: int
-    created_at: datetime
-
-    def __init__(
-        self,
-        role: str,
-        content: str | None = None,
-        id: uuid.UUID | None = None,
-        name: str | None = None,
-        function_call: FunctionCall | None = None,
-        n_tokens: int | None = None,
-        created_at: datetime | None = None,
-    ) -> None:
-        if role not in ["system", "assistant", "user", "function"]:
-            raise ValueError(f"Invalid role: {role}")
-
-        if role != "function" and name is not None:
-            raise ValueError("name must be specified only when role is function")
-        if role == "function" and name is None:
-            raise ValueError("name must be specified when role is function")
-
-        if id is None:
-            self.id = uuid.uuid4()
-        else:
-            self.id = id
-
-        self.role = role
-        self._content = content
-        self.name = name
-        self._function_call = function_call
-
-        if n_tokens is not None:
-            self._n_tokens = n_tokens
-        else:
-            self.__update_n_tokens()
-
-        if created_at is None:
-            self.created_at = datetime.now(timezone.utc)
-        else:
-            self.created_at = created_at
-
-    def __update_n_tokens(self) -> None:
-        self._n_tokens = 0
-        if self._content is not None:
-            self._n_tokens += Tokenizer().count(self._content)
-        if self._function_call is not None:
-            self._n_tokens += Tokenizer().count(self._function_call.as_json())
-
-    @property
-    def content(self) -> str | None:
-        return self._content
-
-    @content.setter
-    def content(self, value: str | None) -> None:
-        self._content = value
-        self.__update_n_tokens()
-
-    @property
-    def function_call(self) -> FunctionCall | None:
-        return self._function_call
-
-    @function_call.setter
-    def function_call(self, value: FunctionCall | None) -> None:
-        self._function_call = value
-        self.__update_n_tokens()
-
-    @property
-    def n_tokens(self) -> int:
-        return self._n_tokens
-
-    def trim(self) -> "Message":
-        """Remove unnecessary information for AI from the function output.
-        If the message is not from function, or the message is short enough,
-        the message is returned as-is.
-        """
-
-        if self.role != "function" or self.n_tokens <= 512 or self.content is None:
-            return self
-
-        m = re.match(
-            r'^<(?<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+" (controls="controls" )?alt="(?P<alt>[^"]+)" />$',
-            self.content,
-        )
-        if m is not None:
-            return Message(
-                role="function",
-                content=f'<{m.group("tag")} alt="{m.group("alt")}" src="/*The media has shown, but the URL in the chat history has omitted.*/" />',
-                name=self.name,
-                function_call=self.function_call,
-                created_at=self.created_at,
-            )
-
-        return self
-
-    def as_dict(self) -> dict[str, str | None | dict[str, str]]:
-        """Convert the message to a dictionary that can used in OpenAI library."""
-
-        if self.content is None and self.function_call is None:
-            raise ValueError("Either content or function_call must be specified")
-
-        result: dict[str, str | None | dict[str, str]] = {
-            "role": self.role,
-            "content": self.content,
-        }
-
-        if self.name is not None:
-            result["name"] = self.name
-
-        if self.function_call is not None:
-            result["function_call"] = self.function_call.as_dict()
-
-        return result
+@dataclass(frozen=True)
+class EventRecord:
+    event: event.Event
+    n_tokens: int
 
 
 class HistoryDB:
@@ -170,55 +56,97 @@ class HistoryDB:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS history (
-                    id TEXT PRIMARY KEY NOT NULL,
                     user_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    type TEXT NOT NULL,
                     content TEXT,
-                    name TEXT,
-                    function_call TEXT,
-                    n_tokens INTEGER NOT NULL,
-                    created_at REAL NOT NULL
+                    function_name TEXT,
+                    function_arguments TEXT,
+                    source TEXT,
+                    PRIMARY KEY (id, user_id)
                 )
             """
             )
 
-    def put(self, user_id: str, message: Message) -> None:
+    def put(self, user_id: str, ev: event.Event) -> None:
         """Save a message to the database."""
 
+        if isinstance(ev, event.Status):
+            return
+
         with self.__conn as conn:
-            conn.execute(
-                """
-                INSERT INTO history (
-                    id,
-                    user_id,
-                    role,
-                    content,
-                    name,
-                    function_call,
-                    n_tokens,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    str(message.id),
-                    user_id,
-                    message.role,
-                    message.content,
-                    message.name,
-                    (
-                        message.function_call.as_json()
-                        if message.function_call is not None
-                        else None
-                    ),
-                    message.n_tokens,
-                    message.created_at.timestamp(),
-                ),
-            )
+            match ev:
+                case event.User() | event.Assistant():
+                    conn.execute(
+                        """
+                            REPLACE INTO history (user_id, id, created_at, type, content)
+                            VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            str(ev.id),
+                            ev.created_at.timestamp(),
+                            ev.type,
+                            ev.content,
+                        ),
+                    )
+                case event.FunctionCall():
+                    conn.execute(
+                        """
+                            REPLACE INTO history (user_id, id, created_at, type, function_name, function_arguments)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            str(ev.id),
+                            ev.created_at.timestamp(),
+                            ev.type,
+                            ev.name,
+                            ev.arguments,
+                        ),
+                    )
+                case event.FunctionOutput():
+                    conn.execute(
+                        """
+                            REPLACE INTO history (user_id, id, created_at, type, function_name, content, source)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            str(ev.id),
+                            ev.created_at.timestamp(),
+                            ev.type,
+                            ev.name,
+                            ev.content,
+                            str(ev.source),
+                        ),
+                    )
+                case event.Error():
+                    conn.execute(
+                        """
+                            REPLACE INTO history (user_id, id, created_at, type, content, source)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            str(ev.id),
+                            ev.created_at.timestamp(),
+                            ev.type,
+                            ev.content,
+                            str(ev.source),
+                        ),
+                    )
+                case _:
+                    print(f"Unknown event type: {ev.type}")
 
     def load_n(
-        self, user_id: str, n: int, until: datetime | None = None
-    ) -> Iterator[Message]:
+        self,
+        user_id: str,
+        n: int,
+        until: datetime | None = None,
+        order: Literal["ASC", "DESC"] = "DESC",
+    ) -> Iterator[EventRecord]:
         """Load chat history of the user, limit by number of messages."""
 
         if until is None:
@@ -226,30 +154,91 @@ class HistoryDB:
 
         cursor = self.__conn.cursor()
         cursor.execute(
-            """
-            SELECT id, role, content, name, function_call, n_tokens, created_at
-            FROM history
-            WHERE user_id = ? AND created_at < ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        """,
+            f"""
+                SELECT id, created_at, type, content, function_name, function_arguments, source
+                FROM history
+                WHERE user_id = ? AND created_at < ?
+                ORDER BY created_at {order}
+                LIMIT ?
+            """,
             (user_id, until.timestamp(), n),
         )
 
-        for id_, role, content, name, function_call, n_tokens, created_at in cursor:
-            yield Message(
-                id=uuid.UUID(id_),
-                role=role,
-                content=content,
-                name=name,
-                function_call=FunctionCall.from_json(function_call)
-                if function_call is not None
-                else None,
+        for (
+            id,
+            created_at,
+            type,
+            content,
+            function_name,
+            function_arguments,
+            source,
+        ) in cursor:
+            ev: event.Event | None = None
+            n_tokens: int = 0
+
+            match type:
+                case "user":
+                    ev = event.User(
+                        id=uuid.UUID(id),
+                        created_at=datetime.fromtimestamp(created_at, timezone.utc),
+                        content=content,
+                        complete=True,
+                    )
+                    n_tokens = Tokenizer().count(content)
+                case "assistant":
+                    ev = event.Assistant(
+                        id=uuid.UUID(id),
+                        created_at=datetime.fromtimestamp(created_at, timezone.utc),
+                        content=content,
+                        source=uuid.UUID(source),
+                        complete=True,
+                    )
+                    n_tokens = Tokenizer().count(content)
+                case "function_call":
+                    ev = event.FunctionCall(
+                        id=uuid.UUID(id),
+                        created_at=datetime.fromtimestamp(created_at, timezone.utc),
+                        name=function_name,
+                        arguments=function_arguments,
+                        source=uuid.UUID(source),
+                        complete=True,
+                    )
+                    n_tokens = Tokenizer().count(
+                        json.dumps(
+                            {
+                                "name": function_name,
+                                "arguments": function_arguments,
+                            }
+                        )
+                    )
+                case "function_output":
+                    ev = event.FunctionOutput(
+                        id=uuid.UUID(id),
+                        created_at=datetime.fromtimestamp(created_at, timezone.utc),
+                        name=function_name,
+                        content=content,
+                        source=uuid.UUID(source),
+                        complete=True,
+                    )
+                    n_tokens = Tokenizer().count(content)
+                case "error":
+                    ev = event.Error(
+                        id=uuid.UUID(id),
+                        created_at=datetime.fromtimestamp(created_at, timezone.utc),
+                        content=content,
+                        source=uuid.UUID(source),
+                        complete=True,
+                    )
+                    n_tokens = Tokenizer().count(content)
+                case _:
+                    continue
+
+            yield EventRecord(
+                event=ev,
                 n_tokens=n_tokens,
-                created_at=datetime.fromtimestamp(created_at, timezone.utc),
             )
 
-    def load(self, user_id: str, tokens_limit: int) -> Iterator[Message]:
+    def load(self, user_id: str, tokens_limit: int) -> Iterator[EventRecord]:
         """Load chat history of the user, limit by total number of tokens."""
 
         n_tokens = 0
@@ -259,28 +248,28 @@ class HistoryDB:
             itr = self.load_n(user_id, 10, until)
 
             n = 0
-            for msg in itr:
-                if n_tokens + msg.n_tokens > tokens_limit:
+            for rec in itr:
+                if n_tokens + rec.n_tokens > tokens_limit:
                     break
 
-                n_tokens += msg.n_tokens
-                until = msg.created_at
-                yield msg
+                n_tokens += rec.n_tokens
+                until = rec.event.created_at
+                yield rec
 
                 n += 1
 
             if n == 0:
                 break
 
-    def last_user_message(self, user_id: str) -> Message | None:
-        """Get the last message of the user."""
+    def last_user_event(self, user_id: str) -> event.User | None:
+        """Get the last event from the user."""
 
         with self.__conn as conn:
             result = conn.execute(
                 """
-                SELECT id, content, created_at, n_tokens
+                SELECT id, content, created_at
                 FROM history
-                WHERE user_id = ? AND role = 'user'
+                WHERE user_id = ? AND type = 'user'
                 ORDER BY created_at DESC
                 LIMIT 1
             """,
@@ -290,10 +279,18 @@ class HistoryDB:
         if result is None:
             return None
 
-        return Message(
+        return event.User(
             id=uuid.UUID(result[0]),
-            role="user",
             content=result[1],
             created_at=datetime.fromtimestamp(result[2], timezone.utc),
-            n_tokens=result[3],
+            complete=True,
         )
+
+    def last_user_message(self, user_id: str) -> str | None:
+        """Get the last message from the user."""
+
+        ev = self.last_user_event(user_id)
+        if ev is None:
+            return None
+
+        return ev.content
