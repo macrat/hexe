@@ -8,15 +8,15 @@ from thread import Thread
 
 
 async def debug_event_handler(ev: event.Event) -> None:
-    if isinstance(ev, event.User) and ev.complete:
+    if isinstance(ev, event.User) and not ev.delta:
         print(f"\nUser:\n{ev.content}\n")
-    if isinstance(ev, event.Assistant) and ev.complete:
+    if isinstance(ev, event.Assistant) and not ev.delta:
         print(f"\nAssistant:\n{ev.content}\n")
-    if isinstance(ev, event.FunctionCall) and ev.complete:
+    if isinstance(ev, event.FunctionCall) and not ev.delta:
         print(f"\nFunction call: {ev.name}({ev.arguments})\n")
-    if isinstance(ev, event.FunctionOutput) and ev.complete:
+    if isinstance(ev, event.FunctionOutput) and not ev.delta:
         print(f"\nFunction output: {ev.name}\n{ev.content}\n")
-    if isinstance(ev, event.Error) and ev.complete:
+    if isinstance(ev, event.Error) and not ev.delta:
         print(f"\nError: {ev.content}\n")
 
 

@@ -1,7 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Self
+from typing import Self, AsyncIterator
 from collections.abc import Callable, Awaitable
 from zoneinfo import ZoneInfo
 import asyncio
@@ -80,18 +80,21 @@ class Thread:
             await runner.shutdown()
 
     async def __event(self, ev: event.Event) -> None:
-        if ev.complete:
+        if not ev.delta:
             self.history.put(self.user_id, ev)
 
         await asyncio.gather(*[handler(ev) for handler in self.event_handlers])
 
-    def subscribe(self, handler: EventHandler) -> Callable[[], None]:
+    def subscribe(self, handler: EventHandler) -> None:
         self.event_handlers.append(handler)
 
-        def unsubscribe() -> None:
-            self.event_handlers.remove(handler)
+    def unsubscribe(self, handler: EventHandler) -> None:
+        self.event_handlers.remove(handler)
 
-        return unsubscribe
+    async def stream(self) -> AsyncIterator[event.Event]:
+        with EventStream(self) as stream:
+            async for ev in stream:
+                yield ev
 
     async def send_message(self, message: str) -> None:
         """Send a message to the thread.
@@ -119,6 +122,9 @@ class Thread:
                 source=user_ev.id,
             )
             await self.__event(err_ev)
+            raise Exception(
+                "Failed to invoke AI."
+            ) from err  # TODO: DEBUG: remove this line
         finally:
             await self.__event(
                 event.Status(
@@ -130,7 +136,7 @@ class Thread:
     async def __invoke(self, source: uuid.UUID) -> None:
         """Invoke AI using messages so far."""
 
-        assi_ev = event.Assistant(content="", source=source, complete=True)
+        assi_ev = event.Assistant(content="", source=source)
 
         last_user_msg = self.history.last_user_message(self.user_id)
         notes = []
@@ -277,7 +283,7 @@ class Thread:
         async for chunk in completion:
             delta = chunk.choices[0].delta
 
-            if "content" in delta:
+            if "content" in delta and delta.content is not None:
                 assi_ev.content += delta.content
 
                 await self.__event(
@@ -286,7 +292,7 @@ class Thread:
                         content=delta.content,
                         created_at=assi_ev.created_at,
                         source=source,
-                        complete=False,
+                        delta=True,
                     )
                 )
 
@@ -297,7 +303,6 @@ class Thread:
                         name=delta.function_call.name,
                         arguments=delta.function_call.arguments,
                         source=source if assi_ev.content == "" else assi_ev.id,
-                        complete=True,
                     )
                 else:
                     func_ev.arguments += delta.function_call.arguments
@@ -309,7 +314,7 @@ class Thread:
                         arguments=delta.function_call.arguments,
                         created_at=func_ev.created_at,
                         source=source,
-                        complete=False,
+                        delta=True,
                     )
                 )
 
@@ -419,7 +424,6 @@ class Thread:
                 name="save_notes",
                 content=json.dumps({"result": "Succeed.", "saved_notes": len(notes)}),
                 source=source.id,
-                complete=True,
             )
 
     async def call_search_notes(
@@ -468,7 +472,6 @@ class Thread:
                     ]
                 ),
                 source=source.id,
-                complete=True,
             )
 
         n_tokens = 0
@@ -505,7 +508,6 @@ class Thread:
             name="search_notes",
             content=content,
             source=source.id,
-            complete=True,
         )
 
     async def call_delete_notes(
@@ -543,7 +545,6 @@ class Thread:
                 name="delete_notes",
                 content=json.dumps({"result": "Succeed.", "deleted_notes": len(ids)}),
                 source=source.id,
-                complete=True,
             )
 
     async def call_run_code(
@@ -587,3 +588,25 @@ class Thread:
             )
 
         return prev
+
+
+class EventStream:
+    def __init__(self, thread: Thread):
+        self.queue: asyncio.Queue[event.Event] = asyncio.Queue()
+        self.thread = thread
+
+    async def put(self, ev: event.Event) -> None:
+        self.queue.put_nowait(ev)
+
+    async def __anext__(self) -> event.Event:
+        return await self.queue.get()
+
+    def __aiter__(self) -> AsyncIterator[event.Event]:
+        return self
+
+    def __enter__(self) -> Self:
+        self.thread.subscribe(self.put)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.thread.unsubscribe(self.put)

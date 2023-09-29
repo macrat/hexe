@@ -92,7 +92,7 @@ class CodeRunner:
                         name="run_code",
                         content=msg["content"]["text"],
                         source=source,
-                        complete=False,
+                        delta=True,
                         created_at=stime,
                     )
 
@@ -103,7 +103,6 @@ class CodeRunner:
                             name="run_code",
                             content=msg["content"]["data"]["text/html"],
                             source=source,
-                            complete=True,
                             created_at=datetime.now(),
                         )
                         continue
@@ -116,7 +115,6 @@ class CodeRunner:
                             + msg["content"]["data"]["application/json"]
                             + "\n```",
                             source=source,
-                            complete=True,
                             created_at=datetime.now(),
                         )
                         continue
@@ -142,7 +140,6 @@ class CodeRunner:
                             name="run_code",
                             content=f'<video src="data:{usetype};base64,{msg["content"]["data"][usetype]}" controls="controls" alt="{alt}" />',
                             source=source,
-                            complete=True,
                             created_at=datetime.now(),
                         )
                         continue
@@ -172,7 +169,6 @@ class CodeRunner:
                             name="run_code",
                             content=f'<img src="data:{usetype};base64,{msg["content"]["data"][usetype]}" alt="{alt}" />',
                             source=source,
-                            complete=True,
                             created_at=datetime.now(),
                         )
                         continue
@@ -184,7 +180,6 @@ class CodeRunner:
                         + json.dumps(msg["content"]["data"], sort_keys=True, indent=4)
                         + "\n```",
                         source=source,
-                        complete=True,
                         created_at=datetime.now(),
                     )
 
@@ -194,7 +189,6 @@ class CodeRunner:
                         name="run_code",
                         content=msg["content"]["data"]["text/plain"],
                         source=source,
-                        complete=True,
                         created_at=datetime.now(),
                     )
 
@@ -207,7 +201,6 @@ class CodeRunner:
                         name="run_code",
                         content=content,
                         source=source,
-                        complete=True,
                         created_at=stime,
                     )
                     yield result

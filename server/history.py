@@ -55,15 +55,15 @@ class HistoryDB:
         with self.__conn as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS history (
+                CREATE TABLE IF NOT EXISTS events (
                     user_id TEXT NOT NULL,
                     id TEXT NOT NULL,
+                    source TEXT,
                     created_at REAL NOT NULL,
                     type TEXT NOT NULL,
                     content TEXT,
                     function_name TEXT,
                     function_arguments TEXT,
-                    source TEXT,
                     PRIMARY KEY (id, user_id)
                 )
             """
@@ -77,10 +77,10 @@ class HistoryDB:
 
         with self.__conn as conn:
             match ev:
-                case event.User() | event.Assistant():
+                case event.User():
                     conn.execute(
                         """
-                            REPLACE INTO history (user_id, id, created_at, type, content)
+                            REPLACE INTO events (user_id, id, created_at, type, content)
                             VALUES (?, ?, ?, ?, ?)
                         """,
                         (
@@ -91,15 +91,31 @@ class HistoryDB:
                             ev.content,
                         ),
                     )
-                case event.FunctionCall():
+                case event.Assistant():
                     conn.execute(
                         """
-                            REPLACE INTO history (user_id, id, created_at, type, function_name, function_arguments)
+                            REPLACE INTO events (user_id, id, source, created_at, type, content)
                             VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_id,
                             str(ev.id),
+                            str(ev.source),
+                            ev.created_at.timestamp(),
+                            ev.type,
+                            ev.content,
+                        ),
+                    )
+                case event.FunctionCall():
+                    conn.execute(
+                        """
+                            REPLACE INTO events (user_id, id, source, created_at, type, function_name, function_arguments)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            str(ev.id),
+                            str(ev.source),
                             ev.created_at.timestamp(),
                             ev.type,
                             ev.name,
@@ -109,45 +125,49 @@ class HistoryDB:
                 case event.FunctionOutput():
                     conn.execute(
                         """
-                            REPLACE INTO history (user_id, id, created_at, type, function_name, content, source)
+                            REPLACE INTO events (user_id, id, source, created_at, type, function_name, content)
                             VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_id,
                             str(ev.id),
+                            str(ev.source),
                             ev.created_at.timestamp(),
                             ev.type,
                             ev.name,
                             ev.content,
-                            str(ev.source),
                         ),
                     )
                 case event.Error():
                     conn.execute(
                         """
-                            REPLACE INTO history (user_id, id, created_at, type, content, source)
+                            REPLACE INTO events (user_id, id, source, created_at, type, content)
                             VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_id,
                             str(ev.id),
+                            str(ev.source),
                             ev.created_at.timestamp(),
                             ev.type,
                             ev.content,
-                            str(ev.source),
                         ),
                     )
                 case _:
                     print(f"Unknown event type: {ev.type}")
 
-    def load_n(
+    def load(
         self,
         user_id: str,
-        n: int,
+        limit: int,
+        since: datetime | None = None,
         until: datetime | None = None,
-        order: Literal["ASC", "DESC"] = "DESC",
+        order: Literal["ASC", "DESC"] = "ASC",
     ) -> Iterator[EventRecord]:
         """Load chat history of the user, limit by number of messages."""
+
+        if since is None:
+            since = datetime.fromtimestamp(0, timezone.utc)
 
         if until is None:
             until = datetime.now()
@@ -156,12 +176,12 @@ class HistoryDB:
         cursor.execute(
             f"""
                 SELECT id, created_at, type, content, function_name, function_arguments, source
-                FROM history
-                WHERE user_id = ? AND created_at < ?
+                FROM events
+                WHERE user_id = ? AND ? <= created_at AND created_at < ?
                 ORDER BY created_at {order}
                 LIMIT ?
             """,
-            (user_id, until.timestamp(), n),
+            (user_id, since.timestamp(), until.timestamp(), limit),
         )
 
         for (
@@ -176,13 +196,19 @@ class HistoryDB:
             ev: event.Event | None = None
             n_tokens: int = 0
 
+            if content is not None:
+                content = str(content)
+            if function_name is not None:
+                function_name = str(function_name)
+            if function_arguments is not None:
+                function_arguments = str(function_arguments)
+
             match type:
                 case "user":
                     ev = event.User(
                         id=uuid.UUID(id),
                         created_at=datetime.fromtimestamp(created_at, timezone.utc),
                         content=content,
-                        complete=True,
                     )
                     n_tokens = Tokenizer().count(content)
                 case "assistant":
@@ -191,7 +217,6 @@ class HistoryDB:
                         created_at=datetime.fromtimestamp(created_at, timezone.utc),
                         content=content,
                         source=uuid.UUID(source),
-                        complete=True,
                     )
                     n_tokens = Tokenizer().count(content)
                 case "function_call":
@@ -201,7 +226,6 @@ class HistoryDB:
                         name=function_name,
                         arguments=function_arguments,
                         source=uuid.UUID(source),
-                        complete=True,
                     )
                     n_tokens = Tokenizer().count(
                         json.dumps(
@@ -218,7 +242,6 @@ class HistoryDB:
                         name=function_name,
                         content=content,
                         source=uuid.UUID(source),
-                        complete=True,
                     )
                     n_tokens = Tokenizer().count(content)
                 case "error":
@@ -227,7 +250,6 @@ class HistoryDB:
                         created_at=datetime.fromtimestamp(created_at, timezone.utc),
                         content=content,
                         source=uuid.UUID(source),
-                        complete=True,
                     )
                     n_tokens = Tokenizer().count(content)
                 case _:
@@ -238,14 +260,14 @@ class HistoryDB:
                 n_tokens=n_tokens,
             )
 
-    def load(self, user_id: str, tokens_limit: int) -> Iterator[EventRecord]:
+    def load_by_tokens(self, user_id: str, tokens_limit: int) -> Iterator[EventRecord]:
         """Load chat history of the user, limit by total number of tokens."""
 
         n_tokens = 0
         until = None
 
         while n_tokens < tokens_limit:
-            itr = self.load_n(user_id, 10, until)
+            itr = self.load(user_id, limit=10, until=until, order="DESC")
 
             n = 0
             for rec in itr:
@@ -268,7 +290,7 @@ class HistoryDB:
             result = conn.execute(
                 """
                 SELECT id, content, created_at
-                FROM history
+                FROM events
                 WHERE user_id = ? AND type = 'user'
                 ORDER BY created_at DESC
                 LIMIT 1
@@ -283,7 +305,6 @@ class HistoryDB:
             id=uuid.UUID(result[0]),
             content=result[1],
             created_at=datetime.fromtimestamp(result[2], timezone.utc),
-            complete=True,
         )
 
     def last_user_message(self, user_id: str) -> str | None:

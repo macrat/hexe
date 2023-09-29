@@ -3,7 +3,7 @@ import json
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Iterator, Literal, TypedDict
 from abc import abstractmethod
 
 from openaitypes import Message as OpenAIMessage
@@ -20,12 +20,12 @@ EventDict = dict[str, str | float | bool]
 class Event:
     id: uuid.UUID
     created_at: datetime
-    complete: bool
+    delta: bool
 
     def __init__(
         self,
-        complete: bool,
         id: uuid.UUID | None = None,
+        delta: bool = False,
         created_at: datetime | None = None,
     ) -> None:
         if id is None:
@@ -38,7 +38,7 @@ class Event:
         else:
             self.created_at = created_at
 
-        self.complete = complete
+        self.delta = delta
 
     @property
     @abstractmethod
@@ -46,12 +46,14 @@ class Event:
         ...
 
     def as_dict(self) -> EventDict:
-        return {
+        ev: EventDict = {
             "type": self.type,
             "id": str(self.id),
             "created_at": self.created_at.timestamp(),
-            "complete": self.complete,
         }
+        if self.delta:
+            ev["delta"] = True
+        return ev
 
     def as_json(self) -> str:
         return json.dumps(self.as_dict())
@@ -64,13 +66,7 @@ class User(Event):
 
     def __init__(self, *args, content: str = "", **kwargs) -> None:
         self.content = content
-        super().__init__(
-            *args,
-            **{
-                **kwargs,
-                "complete": True,
-            },
-        )
+        super().__init__(*args, **kwargs)
 
     def as_dict(self) -> EventDict:
         return {
@@ -173,13 +169,7 @@ class Status(Event):
         self.source = source
         self.generating = generating
 
-        super().__init__(
-            *args,
-            **{
-                **kwargs,
-                "complete": True,
-            },
-        )
+        super().__init__(*args, **kwargs)
 
     def as_dict(self) -> EventDict:
         return {
@@ -198,13 +188,7 @@ class Error(Event):
     def __init__(self, source: uuid.UUID, *args, content: str = "", **kwargs) -> None:
         self.content = content
         self.source = source
-        super().__init__(
-            *args,
-            **{
-                **kwargs,
-                "complete": True,
-            },
-        )
+        super().__init__(*args, **kwargs)
         self.source = source
 
     def as_dict(self) -> EventDict:

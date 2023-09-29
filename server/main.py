@@ -3,14 +3,16 @@ import uuid
 import os
 from datetime import datetime
 from datetime import timezone
+from typing import AsyncIterator
+import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from history import HistoryDB
 from note import NoteDB
 import event
-from thread import ThreadManager
+from thread import ThreadManager, Thread
 
 
 app = FastAPI()
@@ -58,7 +60,7 @@ async def get():
                     ws.onmessage = function(event) {
                         const data = JSON.parse(event.data);
 
-                        if (!data.complete) {
+                        if (!data.delta) {
                             console.log(data);
                             return;
                         }
@@ -101,12 +103,96 @@ async def get():
     )
 
 
+@app.post("/api/message")
+async def post_message(request: Request):
+    if thread_manager is None:
+        return JSONResponse(
+            {
+                "error": "Server not ready yet.",
+            },
+            status_code=503,
+        )
+
+    content_type = request.headers.get("content-type")
+    if content_type is None or content_type.split(";")[0] != "text/plain":
+        return JSONResponse(
+            {
+                "error": "The content type must be text/plain.",
+            },
+            status_code=400,
+        )
+
+    content = (await request.body()).decode("utf-8")
+
+    async def collect_messages(thread: Thread) -> list[event.EventDict]:
+        messages: list[event.EventDict] = []
+        async for ev in thread.stream():
+            match ev:
+                case event.Status(generating=False):
+                    return messages
+                case event.Assistant() | event.FunctionCall() | event.FunctionOutput() | event.Error() if not ev.delta:
+                    messages.append(ev.as_dict())
+        return messages
+
+    thread = thread_manager.get("user1")
+
+    messages, _ = await asyncio.gather(
+        collect_messages(thread),
+        thread.send_message(content),
+    )
+
+    return {
+        "messages": messages,
+    }
+
+
+@app.get("/api/events")
+async def get_events(
+    limit: int = 20, since: int = 0, until: int | None = None, stream: bool = False
+):
+    if thread_manager is None or history is None:
+        return JSONResponse(
+            {
+                "error": "Server not ready yet.",
+            },
+            status_code=503,
+        )
+
+    if stream:
+        thread = thread_manager.get("user1")
+
+        async def stream_events() -> AsyncIterator[str]:
+            for er in reversed(list(history.load("user1", limit=limit, order="DESC"))):
+                yield er.event.as_json() + "\n"
+
+            async for ev in thread.stream():
+                yield ev.as_json() + "\n"
+
+        return StreamingResponse(stream_events(), media_type="application/x-ndjson")
+    else:
+        return {
+            "events": [
+                x.event
+                for x in history.load(
+                    "user1",
+                    limit=limit,
+                    since=datetime.fromtimestamp(since, tz=timezone.utc)
+                    if since
+                    else None,
+                    until=datetime.fromtimestamp(until, tz=timezone.utc)
+                    if until
+                    else None,
+                )
+            ]
+        }
+
+
 @app.websocket("/api/events")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_events(websocket: WebSocket):
     await websocket.accept()
 
     if thread_manager is None:
-        await websocket.send_json({"type": "error", "content": "Server not ready."})
+        await websocket.send_json({"type": "error", "content": "Server not ready yet."})
         await websocket.close()
         return
 
@@ -114,13 +200,13 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json(event.as_dict())
 
     thread = thread_manager.get("user1")
-    unsubscribe = thread.subscribe(on_event)
+    thread.subscribe(on_event)
 
     while True:
         try:
             data = json.loads(await websocket.receive_text())
         except WebSocketDisconnect:
-            unsubscribe()
+            thread.unsubscribe(on_event)
             break
 
         if data.get("type") == "message":
