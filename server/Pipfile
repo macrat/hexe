@@ -15,6 +15,7 @@ websockets = "*"
 black = "*"
 mypy = "*"
 uvicorn = "*"
+isort = "*"
 
 [requires]
 python_version = "3.11"

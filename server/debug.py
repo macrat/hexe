@@ -1,9 +1,9 @@
 import uuid
 from zoneinfo import ZoneInfo
 
+import event
 from history import HistoryDB
 from note import NoteDB
-import event
 from thread import Thread
 
 

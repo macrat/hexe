@@ -1,9 +1,9 @@
+import json
 import uuid
 from collections.abc import AsyncIterator
-import json
 from datetime import datetime
 
-from jupyter_client import AsyncKernelManager, AsyncKernelClient
+from jupyter_client import AsyncKernelClient, AsyncKernelManager
 from jupyter_client.kernelspec import KernelSpec, KernelSpecManager
 
 import event
@@ -138,7 +138,11 @@ class CodeRunner:
                         yield event.FunctionOutput(
                             id=uuid.uuid4(),
                             name="run_code",
-                            content=f'<video src="data:{usetype};base64,{msg["content"]["data"][usetype]}" controls="controls" alt="{alt}" />',
+                            content=(
+                                "<video"
+                                f" src=\"data:{usetype};base64,{msg['content']['data'][usetype]}\""
+                                f' controls="controls" alt="{alt}" />'
+                            ),
                             source=source,
                             created_at=datetime.now(),
                         )
@@ -167,7 +171,11 @@ class CodeRunner:
                         yield event.FunctionOutput(
                             id=uuid.uuid4(),
                             name="run_code",
-                            content=f'<img src="data:{usetype};base64,{msg["content"]["data"][usetype]}" alt="{alt}" />',
+                            content=(
+                                "<img"
+                                f" src=\"data:{usetype};base64,{msg['content']['data'][usetype]}\""
+                                f' alt="{alt}" />'
+                            ),
                             source=source,
                             created_at=datetime.now(),
                         )

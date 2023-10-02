@@ -1,18 +1,17 @@
+import asyncio
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Self, AsyncIterator
-from collections.abc import Callable, Awaitable
+from typing import AsyncIterator, Self
 from zoneinfo import ZoneInfo
-import asyncio
 
 import openai
 
-from note import Note, NoteDB
-from history import HistoryDB
 import event
 from coderunner import CodeRunner
-
+from history import HistoryDB
+from note import Note, NoteDB
 
 TERMS = {
     "a day": 1,
@@ -151,17 +150,32 @@ class Thread:
 
         system_prompt = "\n".join(
             [
-                "You are Hexe, a faithful AI assistant, and also a world-class programmer who can complete anything by executing code.",
+                (
+                    "You are Hexe, a faithful AI assistant, and also a world-class"
+                    " programmer who can complete anything by executing code."
+                ),
                 "",
-                "If user changes the topic, write a note what you two talked about in the previous topic, and then respond to the new topic.",
+                (
+                    "If user changes the topic, write a note what you two talked about"
+                    " in the previous topic, and then respond to the new topic."
+                ),
                 "Or if you learned new things, write it to notes to remember it.",
                 "Too many notes are better than too few notes.",
                 "",
-                "If user asks you to do something, you write a plan first, and then execute it.",
+                (
+                    "If user asks you to do something, you write a plan first, and then"
+                    " execute it."
+                ),
                 "Always recap progress and your plan between each step.",
-                "You have only very short term memory, so you need to recap the plan to retain it.",
+                (
+                    "You have only very short term memory, so you need to recap the"
+                    " plan to retain it."
+                ),
                 "",
-                "Keep each steps in the plan as short as possible, because simple steps are easier to achieve.",
+                (
+                    "Keep each steps in the plan as short as possible, because simple"
+                    " steps are easier to achieve."
+                ),
                 "Do write a shorter code, and test it more often.",
                 "",
                 "",
@@ -208,11 +222,17 @@ class Thread:
                                     "required": ["content", "available_term"],
                                     "properties": {
                                         "content": {
-                                            "desctiption": "The content to save. Follow 5W1H method to write each note.",
+                                            "desctiption": (
+                                                "The content to save. Follow 5W1H"
+                                                " method to write each note."
+                                            ),
                                             "type": "string",
                                         },
                                         "available_term": {
-                                            "description": "How long the information is meaningful and useful.",
+                                            "description": (
+                                                "How long the information is meaningful"
+                                                " and useful."
+                                            ),
                                             "type": "string",
                                             "enum": list(TERMS.keys()),
                                         },
@@ -225,7 +245,10 @@ class Thread:
                 },
                 {
                     "name": "search_notes",
-                    "description": "Search notes that you saved. The result include IDs, created timestamps, and note contents.",
+                    "description": (
+                        "Search notes that you saved. The result include IDs, created"
+                        " timestamps, and note contents."
+                    ),
                     "parameters": {
                         "type": "object",
                         "required": ["query"],
@@ -255,7 +278,12 @@ class Thread:
                 },
                 {
                     "name": "run_code",
-                    "description": "Run code in a Jupyter environment, and returns the output and the result. To install packages, you can use `!pip install <package>` for Python, and `apt-get install <package>` for Bash.",
+                    "description": (
+                        "Run code in a Jupyter environment, and returns the output and"
+                        " the result. To install packages, you can use `!pip install"
+                        " <package>` for Python, and `apt-get install <package>` for"
+                        " Bash."
+                    ),
                     "parameters": {
                         "type": "object",
                         "required": ["language", "code"],
@@ -346,7 +374,12 @@ class Thread:
             args = json.loads(source.arguments)
         except Exception as err:
             return event.Error(
-                content=f"Failed to parse arguments to call function `{source.name}`.\n> {err}\n\nGiven arguments:\n```json\n{source.arguments}\n```\n\nPlease fix the syntax and call `{source.name}` again.",
+                content=(
+                    f"Failed to parse arguments to call function `{source.name}`.\n>"
+                    f" {err}\n\nGiven"
+                    f" arguments:\n```json\n{source.arguments}\n```\n\nPlease fix the"
+                    f" syntax and call `{source.name}` again."
+                ),
                 source=source.id,
             )
 
@@ -362,7 +395,10 @@ class Thread:
             # case "generate_image":
             case _:
                 return event.Error(
-                    content=f"Unknown function: `{source.name}`\nPlease use only given functions.",
+                    content=(
+                        f"Unknown function: `{source.name}`\nPlease use only given"
+                        " functions."
+                    ),
                     source=source.id,
                 )
 
@@ -373,13 +409,18 @@ class Thread:
             [not isinstance(note, dict) for note in args["notes"]]
         ):
             return event.Error(
-                content="save_notes: `notes` argument must be a non-empty list of objects.",
+                content=(
+                    "save_notes: `notes` argument must be a non-empty list of objects."
+                ),
                 source=source.id,
             )
 
         if any([not isinstance(note.get("content"), str) for note in args["notes"]]):
             return event.Error(
-                content="save_notes: `content` property of `notes` argument must be a non-empty string.",
+                content=(
+                    "save_notes: `content` property of `notes` argument must be a"
+                    " non-empty string."
+                ),
                 source=source.id,
             )
 
@@ -390,7 +431,10 @@ class Thread:
             ]
         ):
             return event.Error(
-                content="save_notes: `available_term` property of `notes` argument must be one of `a day`, `a month`, `a year`, or `forever`.",
+                content=(
+                    "save_notes: `available_term` property of `notes` argument must be"
+                    " one of `a day`, `a month`, `a year`, or `forever`."
+                ),
                 source=source.id,
             )
 
@@ -408,7 +452,9 @@ class Thread:
 
         if len(notes) == 0:
             return event.Error(
-                content="save_notes: `notes` argument must be a non-empty list of objects.",
+                content=(
+                    "save_notes: `notes` argument must be a non-empty list of objects."
+                ),
                 source=source.id,
             )
 
@@ -467,7 +513,10 @@ class Thread:
                         "{\n",
                         '  "result": "Found 0 notes.",',
                         '  "notes": [],',
-                        '  "rule": "Before report user that not found notes, try again with different query at least 3 times.",',
+                        (
+                            '  "rule": "Before report user that not found notes, try'
+                            ' again with different query at least 3 times.",'
+                        ),
                         "}",
                     ]
                 ),
@@ -499,7 +548,10 @@ class Thread:
                 '  "notes": [',
                 *[f"  {record}," for record in records],
                 "  ],",
-                '  "rule": "If there is no suitable notes found, please try different query before report to user.",',
+                (
+                    '  "rule": "If there is no suitable notes found, please try'
+                    ' different query before report to user.",'
+                ),
                 "}",
             ]
         )
@@ -553,7 +605,10 @@ class Thread:
         supported_languages = ["python", "bash"]
         if "language" not in args or args.get("language") not in supported_languages:
             return event.Error(
-                content=f"run_code: `language` argument must be one of: {supported_languages}.",
+                content=(
+                    "run_code: `language` argument must be one of:"
+                    f" {supported_languages}."
+                ),
                 source=source.id,
             )
 
@@ -583,7 +638,9 @@ class Thread:
 
         if prev is None:
             return event.Error(
-                content="run_code: Failed to start Jupyter environment to execute code.",
+                content=(
+                    "run_code: Failed to start Jupyter environment to execute code."
+                ),
                 source=source.id,
             )
 

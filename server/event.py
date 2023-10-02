@@ -1,19 +1,68 @@
-import uuid
 import json
 import re
-from datetime import datetime, timezone
-from dataclasses import dataclass
-from typing import Iterator, Literal, TypedDict
+import uuid
 from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterator, Literal, TypedDict
 
 from openaitypes import Message as OpenAIMessage
-
 
 EventType = Literal[
     "user", "assistant", "function_call", "function_output", "status", "error"
 ]
 
-EventDict = dict[str, str | float | bool]
+
+class EventDictCommonRequired(TypedDict):
+    type: EventType
+    id: str
+    created_at: float
+
+
+class EventDictCommon(EventDictCommonRequired, total=False):
+    delta: Literal[True]
+
+
+class EventDictUser(EventDictCommon):
+    content: str
+
+
+class EventDictAssistant(EventDictCommon):
+    content: str
+    source: str
+
+
+class EventDictFunctionCall(EventDictCommon):
+    name: str
+    arguments: str
+    source: str
+
+
+class EventDictFunctionOutput(EventDictCommon):
+    name: str
+    content: str
+    source: str
+
+
+class EventDictStatus(EventDictCommon):
+    source: str
+    generating: bool
+
+
+class EventDictError(EventDictCommon):
+    content: str
+    source: str
+
+
+EventDict = (
+    EventDictCommon
+    | EventDictUser
+    | EventDictAssistant
+    | EventDictFunctionCall
+    | EventDictFunctionOutput
+    | EventDictStatus
+    | EventDictError
+)
 
 
 @dataclass(init=False)
@@ -148,11 +197,15 @@ class FunctionOutput(Event):
         """
 
         m = re.match(
-            r'^<(?<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+" (controls="controls" )?alt="(?P<alt>[^"]+)" />$',
+            r'^<(?<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+"'
+            r' (controls="controls" )?alt="(?P<alt>[^"]+)" />$',
             self.content,
         )
         if m is not None:
-            return f'<{m.group("tag")} alt="{m.group("alt")}" src="/*The media has shown, but the URL in the chat history has omitted.*/" />'
+            return (
+                f'<{m.group("tag")} alt="{m.group("alt")}" src="/*The media has shown,'
+                ' but the URL in the chat history has omitted.*/" />'
+            )
 
         return self.content
 

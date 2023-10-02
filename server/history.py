@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterator, Literal
 
-from tokenizer import Tokenizer
 import event
+from tokenizer import Tokenizer
 
 
 @dataclass
@@ -289,12 +289,12 @@ class HistoryDB:
         with self.__conn as conn:
             result = conn.execute(
                 """
-                SELECT id, content, created_at
-                FROM events
-                WHERE user_id = ? AND type = 'user'
-                ORDER BY created_at DESC
-                LIMIT 1
-            """,
+                    SELECT id, content, created_at
+                    FROM events
+                    WHERE user_id = ? AND type = 'user'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """,
                 (user_id,),
             ).fetchone()
 

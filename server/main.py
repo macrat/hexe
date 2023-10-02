@@ -1,19 +1,17 @@
-import json
-import uuid
-import os
-from datetime import datetime
-from datetime import timezone
-from typing import AsyncIterator
 import asyncio
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import AsyncIterator, TypedDict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
 
+import event
 from history import HistoryDB
 from note import NoteDB
-import event
-from thread import ThreadManager, Thread
-
+from thread import Thread, ThreadManager
 
 app = FastAPI()
 history: HistoryDB | None = None
@@ -21,7 +19,7 @@ thread_manager: ThreadManager | None = None
 
 
 @app.on_event("startup")
-def startup():
+def startup() -> None:
     global history
     global thread_manager
 
@@ -35,12 +33,13 @@ def startup():
 
 
 @app.on_event("shutdown")
-async def shutdown():
-    await thread_manager.shutdown()
+async def shutdown() -> None:
+    if thread_manager is not None:
+        await thread_manager.shutdown()
 
 
 @app.get("/")
-async def get():
+async def get() -> HTMLResponse:
     return HTMLResponse(
         """
         <html>
@@ -103,24 +102,18 @@ async def get():
     )
 
 
-@app.post("/api/message")
-async def post_message(request: Request):
+class PostMessageResponse(TypedDict):
+    messages: list[event.EventDict]
+
+
+@app.post("/api/messages")
+async def post_message(request: Request) -> PostMessageResponse:
     if thread_manager is None:
-        return JSONResponse(
-            {
-                "error": "Server not ready yet.",
-            },
-            status_code=503,
-        )
+        raise HTTPException(503, detail="Server not ready yet.")
 
     content_type = request.headers.get("content-type")
     if content_type is None or content_type.split(";")[0] != "text/plain":
-        return JSONResponse(
-            {
-                "error": "The content type must be text/plain.",
-            },
-            status_code=400,
-        )
+        raise HTTPException(400, detail="The content type must be text/plain.")
 
     content = (await request.body()).decode("utf-8")
 
@@ -146,17 +139,16 @@ async def post_message(request: Request):
     }
 
 
-@app.get("/api/events")
+class GetEventsResponse(TypedDict):
+    events: list[event.EventDict]
+
+
+@app.get("/api/events", response_model=GetEventsResponse)
 async def get_events(
     limit: int = 20, since: int = 0, until: int | None = None, stream: bool = False
-):
+) -> GetEventsResponse | StreamingResponse:
     if thread_manager is None or history is None:
-        return JSONResponse(
-            {
-                "error": "Server not ready yet.",
-            },
-            status_code=503,
-        )
+        raise HTTPException(503, detail="Server not ready yet.")
 
     if stream:
         thread = thread_manager.get("user1")
@@ -172,29 +164,31 @@ async def get_events(
     else:
         return {
             "events": [
-                x.event
+                x.event.as_dict()
                 for x in history.load(
                     "user1",
                     limit=limit,
-                    since=datetime.fromtimestamp(since, tz=timezone.utc)
-                    if since
-                    else None,
-                    until=datetime.fromtimestamp(until, tz=timezone.utc)
-                    if until
-                    else None,
+                    since=(
+                        datetime.fromtimestamp(since, tz=timezone.utc)
+                        if since
+                        else None
+                    ),
+                    until=(
+                        datetime.fromtimestamp(until, tz=timezone.utc)
+                        if until
+                        else None
+                    ),
                 )
-            ]
+            ],
         }
 
 
 @app.websocket("/api/events")
 async def websocket_events(websocket: WebSocket):
-    await websocket.accept()
-
     if thread_manager is None:
-        await websocket.send_json({"type": "error", "content": "Server not ready yet."})
-        await websocket.close()
-        return
+        raise HTTPException(503, detail="Server not ready yet.")
+
+    await websocket.accept()
 
     async def on_event(event):
         await websocket.send_json(event.as_dict())
