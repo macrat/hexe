@@ -22,11 +22,18 @@ export default function Index() {
         {messages.map((message) => (
           <li key={message.id}>
             <b>{message.type}</b> - <span>{new Date(message.createdAt).toLocaleString()}</span>
-            {'content' in message ? (
+            {message.type === 'function_call' ? (
+              <>
+                <pre>function <b>{message.name}</b> {message.arguments}</pre>
+                <ol>
+                  {message.outputs.map((output) => (
+                    <li key={output.id}><pre>{output.content}</pre></li>
+                  ))}
+                </ol>
+              </>
+            ) : (
               <pre>{message.content}</pre>
-            ) : 'arguments' in message ? (
-              <pre>function <b>{message.name}</b> {message.arguments}</pre>
-            ) : null}
+            )}
           </li>
         ))}
       </ul>
