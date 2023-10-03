@@ -155,12 +155,12 @@ async def get_events(
 
         async def stream_events() -> AsyncIterator[str]:
             for er in reversed(list(history.load("user1", limit=limit, order="DESC"))):
-                yield er.event.as_json() + "\n"
+                yield "data: " + er.event.as_json() + "\n\n"
 
             async for ev in thread.stream():
-                yield ev.as_json() + "\n"
+                yield "data: " + ev.as_json() + "\n\n"
 
-        return StreamingResponse(stream_events(), media_type="application/x-ndjson")
+        return StreamingResponse(stream_events(), media_type="text/event-stream")
     else:
         return {
             "events": [

@@ -13,56 +13,19 @@ EventType = Literal[
 ]
 
 
-class EventDictCommonRequired(TypedDict):
-    type: EventType
-    id: str
+class EventDictRequired(TypedDict):
     created_at: float
+    id: str
+    type: EventType
 
 
-class EventDictCommon(EventDictCommonRequired, total=False):
-    delta: Literal[True]
-
-
-class EventDictUser(EventDictCommon):
-    content: str
-
-
-class EventDictAssistant(EventDictCommon):
-    content: str
-    source: str
-
-
-class EventDictFunctionCall(EventDictCommon):
-    name: str
+class EventDict(EventDictRequired, total=False):
     arguments: str
-    source: str
-
-
-class EventDictFunctionOutput(EventDictCommon):
-    name: str
     content: str
-    source: str
-
-
-class EventDictStatus(EventDictCommon):
-    source: str
+    delta: Literal[True]
     generating: bool
-
-
-class EventDictError(EventDictCommon):
-    content: str
+    name: str
     source: str
-
-
-EventDict = (
-    EventDictCommon
-    | EventDictUser
-    | EventDictAssistant
-    | EventDictFunctionCall
-    | EventDictFunctionOutput
-    | EventDictStatus
-    | EventDictError
-)
 
 
 @dataclass(init=False)
