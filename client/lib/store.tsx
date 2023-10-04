@@ -73,17 +73,38 @@ const chatSlice = createSlice({
         state.generating = ev.generating;
       }
 
-      const idx = state.messages.findLastIndex((message) => message.id === ev.id);
+      let idx = state.messages.findLastIndex((message) => message.id === ev.id);
 
       const sourceIdx = 'source' in ev ? state.messages.findIndex((message) => message.id === ev.source) : -1;
 
       if (idx < 0) {
-        state.messages.push({ ...ev, createdAt: ev.created_at * 1000 });
-      } else if (ev.delta) {
+        if (ev.type === 'user' || ev.type === 'assistant') {
+          state.messages.push({
+            id: ev.id,
+            type: ev.type,
+            content: ev.content,
+            errors: [],
+            createdAt: ev.created_at * 1000,
+          });
+        } else if (ev.type === 'function_call') {
+          state.messages.push({
+            id: ev.id,
+            type: 'function_call',
+            name: ev.name,
+            arguments: ev.arguments,
+            outputs: [],
+            errors: [],
+            createdAt: ev.created_at * 1000,
+          });
+        }
+        idx = state.messages.length - 1;
+      }
+
+      if (ev.delta) {
         const msg = state.messages[idx];
 
         if (msg.type === 'function_call') {
-          msg.arguments = ev.arguments;
+          msg.arguments += ev.arguments;
         } else {
           msg.content += ev.content;
         }

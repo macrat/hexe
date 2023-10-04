@@ -2,6 +2,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 import event
+from auth import User
 from history import HistoryDB
 from note import NoteDB
 from thread import Thread
@@ -31,7 +32,12 @@ async def debug_main() -> None:
     notes = NoteDB("./notes", ns)
     history = HistoryDB("./history.db")
 
-    thread = Thread("user1", history, notes, timezone=ZoneInfo("Asia/Tokyo"))
+    thread = Thread(
+        User(id="user1", name="Jhon Due"),
+        history,
+        notes,
+        timezone=ZoneInfo("Asia/Tokyo"),
+    )
 
     thread.event_handlers.append(debug_event_handler)
 
@@ -43,7 +49,7 @@ async def debug_main() -> None:
 async def debug_jupyter() -> None:
     from coderunner import CodeRunner
 
-    r = CodeRunner("user1", "_python")
+    r = CodeRunner("user1", "python")
 
     async for ev in r.execute(uuid.uuid4(), "import matplotlib.pyplot as plt"):
         await debug_event_handler(ev)
@@ -57,4 +63,4 @@ async def debug_jupyter() -> None:
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(debug_main())
+    asyncio.run(debug_jupyter())

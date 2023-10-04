@@ -126,7 +126,7 @@ class HistoryDB:
                     conn.execute(
                         """
                             REPLACE INTO events (user_id, id, source, created_at, type, function_name, content)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_id,

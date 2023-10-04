@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -68,13 +69,13 @@ class NoteDB:
         self.__ns = namespace
 
         db = chromadb.PersistentClient(path)
-        # ef = embedding_functions.OpenAIEmbeddingFunction(
-        #    api_key=os.environ["OPENAI_API_KEY"],
-        #    model_name="text-embedding-ada-002",
-        # )
+        ef = embedding_functions.OpenAIEmbeddingFunction(
+            api_key=os.environ["OPENAI_API_KEY"],
+            model_name="text-embedding-ada-002",
+        )
         self.__collection = db.get_or_create_collection(
             str(namespace),
-            # embedding_function=ef,
+            embedding_function=ef,
             metadata={"hnsw:space": "cosine"},
         )
 

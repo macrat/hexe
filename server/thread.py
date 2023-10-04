@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import openai
 
 import event
+from auth import User
 from coderunner import CodeRunner
 from history import HistoryDB
 from note import Note, NoteDB
@@ -39,21 +40,21 @@ class ThreadManager:
         self.history = history
         self.notes = notes
 
-    def get(self, user_id: str) -> "Thread":
-        if user_id not in self.threads:
-            self.threads[user_id] = Thread(
-                user_id,
+    def get(self, user: User) -> "Thread":
+        if user.id not in self.threads:
+            self.threads[user.id] = Thread(
+                user,
                 self.history,
                 self.notes,
             )
-        return self.threads[user_id]
+        return self.threads[user.id]
 
     async def shutdown(self) -> None:
         await asyncio.gather(*[thread.shutdown() for thread in self.threads.values()])
 
 
 class Thread:
-    user_id: str
+    user: User
     history: HistoryDB
     notes: NoteDB
     event_handlers: list[EventHandler]
@@ -62,17 +63,19 @@ class Thread:
 
     def __init__(
         self,
-        user_id: str,
+        user: User,
         history: HistoryDB,
         notes: NoteDB,
         timezone: ZoneInfo = ZoneInfo("UTC"),
     ) -> None:
-        self.user_id = user_id
+        self.user = user
         self.history = history
         self.notes = notes
         self.event_handlers = []
         self.timezone = timezone
         self.runners = {}
+        with open("prompt.txt", "r") as f:
+            self.prompt = f.read()
 
     async def shutdown(self) -> None:
         for runner in self.runners.values():
@@ -80,7 +83,7 @@ class Thread:
 
     async def __event(self, ev: event.Event) -> None:
         if not ev.delta:
-            self.history.put(self.user_id, ev)
+            self.history.put(self.user.id, ev)
 
         await asyncio.gather(*[handler(ev) for handler in self.event_handlers])
 
@@ -90,10 +93,8 @@ class Thread:
     def unsubscribe(self, handler: EventHandler) -> None:
         self.event_handlers.remove(handler)
 
-    async def stream(self) -> AsyncIterator[event.Event]:
-        with EventStream(self) as stream:
-            async for ev in stream:
-                yield ev
+    def stream(self) -> "EventReader":
+        return EventReader(self)
 
     async def send_message(self, message: str) -> None:
         """Send a message to the thread.
@@ -137,10 +138,10 @@ class Thread:
 
         assi_ev = event.Assistant(content="", source=source)
 
-        last_user_msg = self.history.last_user_message(self.user_id)
+        last_user_msg = self.history.last_user_message(self.user.id)
         notes = []
         if last_user_msg is not None:
-            notes = self.notes.query(self.user_id, last_user_msg)
+            notes = self.notes.query(self.user.id, last_user_msg)
             n_tokens = 0
             for i, note in enumerate(notes):
                 n_tokens += note.n_tokens
@@ -150,35 +151,9 @@ class Thread:
 
         system_prompt = "\n".join(
             [
-                (
-                    "You are Hexe, a faithful AI assistant, and also a world-class"
-                    " programmer who can complete anything by executing code."
-                ),
+                self.prompt,
                 "",
-                (
-                    "If user changes the topic, write a note what you two talked about"
-                    " in the previous topic, and then respond to the new topic."
-                ),
-                "Or if you learned new things, write it to notes to remember it.",
-                "Too many notes are better than too few notes.",
-                "",
-                (
-                    "If user asks you to do something, you write a plan first, and then"
-                    " execute it."
-                ),
-                "Always recap progress and your plan between each step.",
-                (
-                    "You have only very short term memory, so you need to recap the"
-                    " plan to retain it."
-                ),
-                "",
-                (
-                    "Keep each steps in the plan as short as possible, because simple"
-                    " steps are easier to achieve."
-                ),
-                "Do write a shorter code, and test it more often.",
-                "",
-                "",
+                f"User name: {self.user.name}",
                 f"Current datetime: {datetime.now(self.timezone).isoformat()}",
                 "",
                 "==========",
@@ -204,7 +179,7 @@ class Thread:
                     "content": system_prompt,
                 },
                 *event.as_messages(
-                    [x.event for x in self.history.load(self.user_id, 2 * 1024)]
+                    [x.event for x in self.history.load(self.user.id, 2 * 1024)]
                 ),
             ],
             functions=[
@@ -302,7 +277,7 @@ class Thread:
                 #    "name": "generate_image",
                 # },
             ],
-            user=self.user_id,
+            user="hexe/" + self.user.id,
             stream=True,
         )
 
@@ -361,11 +336,13 @@ class Thread:
                         )
                     )
 
-                match chunk.choices[0].finish_reason, func_ev:
-                    case "function_call", event.FunctionCall | "stop", event.FunctionCall:
-                        result = await self.call_function(func_ev)
-                        await self.__event(result)
-                        await self.__invoke(result.id)
+                if func_ev is not None and chunk.choices[0].finish_reason in [
+                    "function_call",
+                    "stop",
+                ]:
+                    result = await self.call_function(func_ev)
+                    await self.__event(result)
+                    await self.__invoke(result.id)
 
     async def call_function(self, source: event.FunctionCall) -> event.Event:
         """Call a function and put the result to the history."""
@@ -459,7 +436,7 @@ class Thread:
             )
 
         try:
-            self.notes.save(self.user_id, notes)
+            self.notes.save(self.user.id, notes)
         except Exception as err:
             return event.Error(
                 content=f"save_notes: Failed to save notes.\n> {err}",
@@ -497,7 +474,7 @@ class Thread:
 
         try:
             all_result = self.notes.query(
-                self.user_id, query, n_results=100, threshold=0.2
+                self.user.id, query, n_results=100, threshold=0.2
             )
         except Exception as err:
             return event.Error(
@@ -586,7 +563,7 @@ class Thread:
             )
 
         try:
-            self.notes.delete(self.user_id, ids)
+            self.notes.delete(self.user.id, ids)
         except Exception as err:
             return event.Error(
                 content=f"delete_notes: Failed to delete notes.\n> {err}",
@@ -626,7 +603,7 @@ class Thread:
         code = args["code"].strip()
 
         if language not in self.runners:
-            self.runners[language] = CodeRunner(self.user_id, language)
+            self.runners[language] = CodeRunner(self.user.id, language)
 
         runner = self.runners[language]
 
@@ -647,7 +624,7 @@ class Thread:
         return prev
 
 
-class EventStream:
+class EventReader:
     def __init__(self, thread: Thread):
         self.queue: asyncio.Queue[event.Event] = asyncio.Queue()
         self.thread = thread
@@ -655,11 +632,14 @@ class EventStream:
     async def put(self, ev: event.Event) -> None:
         self.queue.put_nowait(ev)
 
-    async def __anext__(self) -> event.Event:
+    async def get(self) -> event.Event:
         return await self.queue.get()
 
     def __aiter__(self) -> AsyncIterator[event.Event]:
         return self
+
+    async def __anext__(self) -> event.Event:
+        return await self.get()
 
     def __enter__(self) -> Self:
         self.thread.subscribe(self.put)

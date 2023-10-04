@@ -73,9 +73,12 @@ class CodeRunner:
         msg_id = self.kc.execute(code)
 
         content = ""
+        result: event.FunctionOutput | None = None
 
         while True:
+            print("waiting...")
             msg = await self.kc.get_iopub_msg()
+            print("got message", msg)
 
             if msg.get("parent_header", {}).get("msg_id") == msg_id:
                 if msg["msg_type"] == "error":
@@ -204,11 +207,14 @@ class CodeRunner:
                     msg["msg_type"] == "status"
                     and msg["content"]["execution_state"] == "idle"
                 ):
-                    yield event.FunctionOutput(
-                        id=stream_id,
-                        name="run_code",
-                        content=content,
-                        source=source,
-                        created_at=stime,
-                    )
-                    yield result
+                    if content != "":
+                        yield event.FunctionOutput(
+                            id=stream_id,
+                            name="run_code",
+                            content=content,
+                            source=source,
+                            created_at=stime,
+                        )
+                    if result is not None:
+                        yield result
+                    return

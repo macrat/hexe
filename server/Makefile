@@ -9,3 +9,6 @@ start:
 fmt:
 	pipenv run isort .
 	pipenv run black *.py
+
+test:
+	pipenv run python -m doctest *.py

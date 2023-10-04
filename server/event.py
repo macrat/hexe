@@ -160,7 +160,7 @@ class FunctionOutput(Event):
         """
 
         m = re.match(
-            r'^<(?<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+"'
+            r'^<(?P<tag>img|video) src="data:(image|video)/[-+_a-zA-Z0-9]+;base64,[^"]+"'
             r' (controls="controls" )?alt="(?P<alt>[^"]+)" />$',
             self.content,
         )

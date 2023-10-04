@@ -3,12 +3,14 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncIterator, TypedDict
+from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 import event
+from auth import Auth, User
 from history import HistoryDB
 from note import NoteDB
 from thread import Thread, ThreadManager
@@ -16,12 +18,14 @@ from thread import Thread, ThreadManager
 app = FastAPI()
 history: HistoryDB | None = None
 thread_manager: ThreadManager | None = None
+auth: Auth | None = None
 
 
 @app.on_event("startup")
 def startup() -> None:
     global history
     global thread_manager
+    global auth
 
     os.makedirs("./db", exist_ok=True)
 
@@ -31,6 +35,15 @@ def startup() -> None:
         NoteDB("./db/notes", uuid.uuid5(uuid.NAMESPACE_DNS, "notes")),
     )
 
+    auth = Auth("./db/auth.db")
+
+    try:
+        # DEBUG
+        # TODO: Remove this
+        auth.register("Test User", "user1", "user1")
+    except Exception:
+        pass
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
@@ -38,76 +51,70 @@ async def shutdown() -> None:
         await thread_manager.shutdown()
 
 
-@app.get("/")
-async def get() -> HTMLResponse:
-    return HTMLResponse(
-        """
-        <html>
-            <head>
-                <title>Chat</title>
-            </head>
-            <body>
-                <ol id='messages'></ol>
-                <form action="" onsubmit="sendMessage(event)">
-                    <textarea id="messageText"></textarea>
-                    <button>Send</button>
-                </form>
-                <script>
-                    const messages = document.getElementById('messages');
+async def userinfo(session: str | None = Cookie(None)) -> User:
+    if auth is None:
+        raise HTTPException(503, detail="Server not ready yet.")
+    if session is None:
+        raise HTTPException(401, detail="Login required.")
 
-                    const ws = new WebSocket("ws://localhost:8000/api/events");
-                    ws.onmessage = function(event) {
-                        const data = JSON.parse(event.data);
+    try:
+        return auth.get_user(session)
+    except ValueError:
+        raise HTTPException(401, detail="Login required.")
 
-                        if (!data.delta) {
-                            console.log(data);
-                            return;
-                        }
-                        const message = document.createElement('li');
-                        message.classList.add(data.type);
 
-                        const type = document.createElement('b');
-                        type.appendChild(document.createTextNode(data.type));
-                        message.appendChild(type);
+class LoginRequest(BaseModel):
+    id: str
+    password: str
 
-                        message.appendChild(document.createTextNode(': '));
 
-                        if (data.type === 'function_call') {
-                            const content = document.createTextNode(`${data.name}(${data.arguments})`);
-                            message.appendChild(content);
-                        } else if (data.type === 'status') {
-                            const content = document.createTextNode(`[generating=${data.generating}]`);
-                            message.appendChild(content);
-                        } else {
-                            const content = document.createTextNode(data.content);
-                            message.appendChild(content);
-                        }
+class LoginResponse(BaseModel):
+    message: str
 
-                        messages.appendChild(message);
-                    };
 
-                    const input = document.getElementById("messageText");
-                    function sendMessage(event) {
-                        event.preventDefault();
-                        ws.send(JSON.stringify({
-                            type: 'message',
-                            content: input.value,
-                        }));
-                        input.value = '';
-                    }
-                </script>
-            </body>
-        </html>
-    """
+@app.post("/api/login")
+async def login(
+    request: LoginRequest,
+    response: Response,
+) -> LoginResponse:
+    if auth is None:
+        raise HTTPException(503, detail="Server not ready yet.")
+
+    max_age = 365 * 24 * 60 * 60
+
+    try:
+        token = auth.login(request.id, request.password, expires_in=max_age)
+    except ValueError:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "message": "Login failed.",
+            },
+        )
+
+    response.set_cookie(
+        "session",
+        token,
+        httponly=True,
+        max_age=max_age,
+        path="/",
+        samesite="strict",
+        secure=True,
     )
 
+    return {
+        "message": "Success",
+    }
 
-class PostMessageResponse(TypedDict):
-    messages: list[event.EventDict]
+
+class EventsResponse(BaseModel):
+    events: list[event.EventDict]
 
 
-@app.post("/api/messages")
-async def post_message(request: Request) -> PostMessageResponse:
+@app.post("/api/events")
+async def post_events(
+    request: Request, user: User = Depends(userinfo)
+) -> EventsResponse:
     if thread_manager is None:
         raise HTTPException(503, detail="Server not ready yet.")
 
@@ -116,6 +123,9 @@ async def post_message(request: Request) -> PostMessageResponse:
         raise HTTPException(400, detail="The content type must be text/plain.")
 
     content = (await request.body()).decode("utf-8")
+
+    if len(content) == 0:
+        raise HTTPException(400, detail="The content must not be empty.")
 
     async def collect_messages(thread: Thread) -> list[event.EventDict]:
         messages: list[event.EventDict] = []
@@ -127,7 +137,7 @@ async def post_message(request: Request) -> PostMessageResponse:
                     messages.append(ev.as_dict())
         return messages
 
-    thread = thread_manager.get("user1")
+    thread = thread_manager.get(user)
 
     messages, _ = await asyncio.gather(
         collect_messages(thread),
@@ -135,30 +145,37 @@ async def post_message(request: Request) -> PostMessageResponse:
     )
 
     return {
-        "messages": messages,
+        "events": messages,
     }
 
 
-class GetEventsResponse(TypedDict):
-    events: list[event.EventDict]
-
-
-@app.get("/api/events", response_model=GetEventsResponse)
+@app.get("/api/events", response_model=EventsResponse)
 async def get_events(
-    limit: int = 20, since: int = 0, until: int | None = None, stream: bool = False
-) -> GetEventsResponse | StreamingResponse:
+    limit: int = 20,
+    since: int = 0,
+    until: int | None = None,
+    stream: bool = False,
+    user: User = Depends(userinfo),
+) -> EventsResponse | StreamingResponse:
     if thread_manager is None or history is None:
         raise HTTPException(503, detail="Server not ready yet.")
 
     if stream:
-        thread = thread_manager.get("user1")
+        thread = thread_manager.get(user)
 
         async def stream_events() -> AsyncIterator[str]:
-            for er in reversed(list(history.load("user1", limit=limit, order="DESC"))):
-                yield "data: " + er.event.as_json() + "\n\n"
+            for r in reversed(list(history.load(user.id, limit=limit, order="DESC"))):
+                yield f"data: {r.event.as_json()}\n\n"
 
-            async for ev in thread.stream():
-                yield "data: " + ev.as_json() + "\n\n"
+            with thread.stream() as stream:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(
+                            asyncio.shield(stream.get()), timeout=60
+                        )
+                        yield f"data: {ev.as_json()}\n\n"
+                    except asyncio.TimeoutError:
+                        yield "event: heartbeat\n\n"
 
         return StreamingResponse(stream_events(), media_type="text/event-stream")
     else:
@@ -166,7 +183,7 @@ async def get_events(
             "events": [
                 x.event.as_dict()
                 for x in history.load(
-                    "user1",
+                    user.id,
                     limit=limit,
                     since=(
                         datetime.fromtimestamp(since, tz=timezone.utc)
@@ -181,27 +198,3 @@ async def get_events(
                 )
             ],
         }
-
-
-@app.websocket("/api/events")
-async def websocket_events(websocket: WebSocket):
-    if thread_manager is None:
-        raise HTTPException(503, detail="Server not ready yet.")
-
-    await websocket.accept()
-
-    async def on_event(event):
-        await websocket.send_json(event.as_dict())
-
-    thread = thread_manager.get("user1")
-    thread.subscribe(on_event)
-
-    while True:
-        try:
-            data = json.loads(await websocket.receive_text())
-        except WebSocketDisconnect:
-            thread.unsubscribe(on_event)
-            break
-
-        if data.get("type") == "message":
-            await thread.send_message(data.get("content", ""))

@@ -9,7 +9,6 @@ openai = "*"
 tiktoken = "*"
 jupyter-client = "*"
 fastapi = "*"
-websockets = "*"
 
 [dev-packages]
 black = "*"
