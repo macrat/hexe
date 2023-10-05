@@ -107,6 +107,11 @@ async def login(
     }
 
 
+@app.get("/api/user")
+async def get_user(user: User = Depends(userinfo)) -> User:
+    return user
+
+
 class EventsResponse(BaseModel):
     events: list[event.EventDict]
 

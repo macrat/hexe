@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import useSWR from 'swr';
+
 import { useChat } from '../lib/store';
 
 export default function Index() {
   const { messages, generating, pushEvent } = useChat();
   const [input, setInput] = useState('');
+  const { data: user, error: userError } = useSWR('/api/user', fetch);
 
   useEffect(() => {
     const source = new EventSource('/api/events?stream=true');
@@ -16,8 +19,24 @@ export default function Index() {
     };
   }, [pushEvent]);
 
+  console.log(user, userError);
+  useEffect(() => {
+    if (userError || user && !user.ok) {
+        window.location.href = '/login';
+    }
+  }, [userError, user]);
+
+  if (!user) return <div>読み込み中</div>;
+
+  if (userError || !user.ok) {
+      return <div><a href="/login">ログイン</a>してください</div>;
+  }
+
   return (
     <>
+      <div>
+        {user?.name}さん
+      </div>
       <ul>
         {messages.map((message) => (
           <li key={message.id}>
